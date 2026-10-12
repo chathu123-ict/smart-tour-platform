@@ -147,3 +147,23 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# --------------------------------------------------
+# Custom Project Additions (Smart Tour Platform)
+# --------------------------------------------------
+
+# SQL Server Database files & Backups 
+*.mdf
+*.ldf
+*.ndf
+*.bak
+*.sqlproj.user
+
+# .NET Builds 
+bin/
+obj/
+.vs/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
