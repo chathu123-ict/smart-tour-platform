@@ -9,9 +9,9 @@ const session = require("express-session");
 const app = express();
 const PORT = 5000;
 
-// ==============================
+
 // 1. MIDDLEWARE
-// ==============================
+
 
 app.use(cors({
   origin: "http://127.0.0.1:3000",
@@ -32,9 +32,9 @@ app.use(session({
   }
 }));
 
-// ==============================
+
 // 2. AUTHENTICATION HELPERS
-// ==============================
+
 
 function requireLogin(req, res, next) {
   if (!req.session?.user) {
@@ -74,17 +74,17 @@ function getDriverId(req) {
     : null;
 }
 
-// ==============================
+
 // 3. HOME
-// ==============================
+
 
 app.get("/", (req, res) => {
   res.send("Smart Tour Backend is Running!");
 });
 
-// ==============================
+
 // 4. GET ALL TOURS
-// ==============================
+
 
 app.get("/api/tours", (req, res) => {
   sql.query(
@@ -104,9 +104,9 @@ app.get("/api/tours", (req, res) => {
   );
 });
 
-// ==============================
+
 // 5. REGISTER CUSTOMER
-// ==============================
+
 
 
 app.post("/api/register", async (req, res) => {
@@ -311,9 +311,8 @@ app.post("/api/register", async (req, res) => {
 });
 
 
-// ==============================
+
 // 6. LOGIN
-// ==============================
 
 app.post("/api/login", (req, res) => {
   const { email, password } = req.body;
@@ -416,9 +415,9 @@ app.post("/api/login", (req, res) => {
   );
 });
 
-// ==============================
+
 // 7. CHECK SESSION
-// ==============================
+
 
 app.get("/api/me", requireLogin, (req, res) => {
   res.json({
@@ -427,9 +426,9 @@ app.get("/api/me", requireLogin, (req, res) => {
   });
 });
 
-// ==============================
+
 // 8. LOGOUT
-// ==============================
+
 
 
 app.post("/api/logout", (req, res) => {
@@ -468,9 +467,9 @@ app.post("/api/logout", (req, res) => {
 
 
 
-// ==============================
+
 // 9. CREATE BOOKING
-// ==============================
+
 
 app.post(
   "/api/bookings",
@@ -569,9 +568,9 @@ app.post(
   }
 );
 
-// ==============================
+
 // 10. CUSTOMER BOOKINGS
-// ==============================
+
 
 app.get(
   "/api/bookings",
@@ -613,14 +612,57 @@ app.get(
   }
 );
 
-// ==============================
+
 // 11. GET DRIVERS
-// ==============================
+
+
+
 
 app.get("/api/drivers", (req, res) => {
+  const { travelDate } = req.query;
+
+  if (
+    travelDate &&
+    (
+      typeof travelDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(travelDate) ||
+      !Number.isFinite(Date.parse(travelDate))
+    )
+  ) {
+    return res.status(400).json({
+      message: "Invalid travel date"
+    });
+  }
+
+  const query = `
+    SELECT
+      d.id,
+      d.name,
+      d.vehicle,
+      d.location,
+      d.available,
+      CASE
+        WHEN ? IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM DriverRequests dr
+            INNER JOIN Bookings b
+              ON dr.bookingId = b.id
+            WHERE dr.driverId = d.id
+              AND dr.status = 'Accepted'
+              AND b.travelDate = TRY_CONVERT(DATE, ?)
+          )
+        THEN CAST(0 AS BIT)
+        ELSE d.available
+      END AS availableForDate
+    FROM Drivers d
+    ORDER BY d.id
+  `;
+
   sql.query(
     connectionString,
-    "SELECT * FROM Drivers",
+    query,
+    [travelDate || null, travelDate || null],
     (error, rows) => {
       if (error) {
         console.error("Drivers Error:", error);
@@ -633,16 +675,21 @@ app.get("/api/drivers", (req, res) => {
       res.json(
         rows.map((driver) => ({
           ...driver,
-          available: Boolean(driver.available)
+          available: Boolean(driver.available),
+          availableForDate: Boolean(driver.availableForDate)
         }))
       );
     }
   );
 });
 
-// ==============================
+
+
+
 // 12. CREATE DRIVER REQUEST
-// ==============================
+
+
+
 
 app.post(
   "/api/driver-requests",
@@ -679,12 +726,14 @@ app.post(
       DECLARE @tourName NVARCHAR(200);
       DECLARE @available BIT;
       DECLARE @bookingStatus NVARCHAR(30);
+      DECLARE @travelDate DATE;
 
       BEGIN TRY
         BEGIN TRANSACTION;
 
         SELECT
           @bookingStatus = b.status,
+          @travelDate = b.travelDate,
           @tourName = t.name
         FROM Bookings b WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN Tours t ON b.tourId = t.id
@@ -717,7 +766,20 @@ app.post(
           ELSE IF ISNULL(@available, 0) = 0
           BEGIN
             SET @resultCode = 409;
-            SET @message = N'Driver is unavailable';
+            SET @message = N'Driver is inactive or unavailable';
+          END
+          ELSE IF EXISTS (
+            SELECT 1
+            FROM DriverRequests dr
+            INNER JOIN Bookings b
+              ON dr.bookingId = b.id
+            WHERE dr.driverId = @driverId
+              AND dr.status = 'Accepted'
+              AND b.travelDate = @travelDate
+          )
+          BEGIN
+            SET @resultCode = 409;
+            SET @message = N'Driver already booked for this date';
           END
           ELSE IF EXISTS (
             SELECT 1
@@ -744,7 +806,9 @@ app.post(
         COMMIT TRANSACTION;
       END TRY
       BEGIN CATCH
-        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
         THROW;
       END CATCH;
 
@@ -800,9 +864,10 @@ app.post(
   }
 );
 
-// ==============================
+
+
 // 13. GET DRIVER REQUESTS
-// ==============================
+
 
 app.get(
   "/api/driver-requests",
@@ -836,24 +901,31 @@ app.get(
       values = [driverId];
     }
 
-    const query = `
-      SELECT
-        dr.id,
-        dr.bookingId,
-        dr.driverId,
-        d.name AS driverName,
-        t.name AS tourName,
-        dr.status
-      FROM DriverRequests dr
-      INNER JOIN Bookings b
-        ON dr.bookingId = b.id
-      INNER JOIN Tours t
-        ON b.tourId = t.id
-      INNER JOIN Drivers d
-        ON dr.driverId = d.id
-      WHERE ${condition}
-      ORDER BY dr.id DESC
-    `;
+    
+
+const query = `
+  SELECT
+    dr.id,
+    dr.bookingId,
+    dr.driverId,
+    d.name AS driverName,
+    t.name AS tourName,
+    b.name AS customerName,
+    CONVERT(VARCHAR(10), b.travelDate, 23) AS travelDate,
+    b.people AS people,
+    dr.status
+  FROM DriverRequests dr
+  INNER JOIN Bookings b
+    ON dr.bookingId = b.id
+  INNER JOIN Tours t
+    ON b.tourId = t.id
+  INNER JOIN Drivers d
+    ON dr.driverId = d.id
+  WHERE ${condition}
+  ORDER BY dr.id DESC
+`;
+
+
 
     sql.query(
       connectionString,
@@ -874,9 +946,11 @@ app.get(
   }
 );
 
-// ==============================
+
 // 14. ACCEPT / REJECT DRIVER REQUEST
-// ==============================
+
+
+
 
 app.patch(
   "/api/driver-requests/:id",
@@ -919,10 +993,16 @@ app.patch(
       DECLARE @bookingId INT;
       DECLARE @driverId INT;
       DECLARE @driverAvailable BIT;
-      DECLARE @lockedBookingId INT;
+      DECLARE @travelDate DATE;
+      DECLARE @bookingStatus NVARCHAR(30);
 
       BEGIN TRY
         BEGIN TRANSACTION;
+
+        -- Serialize acceptance attempts for this driver
+        SELECT @driverAvailable = available
+        FROM Drivers WITH (UPDLOCK, HOLDLOCK)
+        WHERE id = @sessionDriverId;
 
         SELECT
           @currentStatus = status,
@@ -953,15 +1033,28 @@ app.patch(
         END
         ELSE
         BEGIN
-          SELECT @lockedBookingId = id
+          SELECT
+            @travelDate = travelDate,
+            @bookingStatus = status
           FROM Bookings WITH (UPDLOCK, HOLDLOCK)
           WHERE id = @bookingId;
 
-          SELECT @driverAvailable = available
-          FROM Drivers WITH (UPDLOCK, HOLDLOCK)
-          WHERE id = @driverId;
-
-          IF EXISTS (
+          IF @travelDate IS NULL
+          BEGIN
+            SET @resultCode = 404;
+            SET @message = N'Booking not found';
+          END
+          ELSE IF @bookingStatus <> 'Pending'
+          BEGIN
+            SET @resultCode = 409;
+            SET @message = N'Booking is no longer pending';
+          END
+          ELSE IF ISNULL(@driverAvailable, 0) = 0
+          BEGIN
+            SET @resultCode = 409;
+            SET @message = N'Driver is inactive or unavailable';
+          END
+          ELSE IF EXISTS (
             SELECT 1
             FROM DriverRequests
             WHERE bookingId = @bookingId
@@ -973,11 +1066,20 @@ app.patch(
             SET @message =
               N'Another driver already accepted this booking';
           END
-          ELSE IF ISNULL(@driverAvailable, 0) = 0
+          ELSE IF EXISTS (
+            SELECT 1
+            FROM DriverRequests dr
+            INNER JOIN Bookings b
+              ON dr.bookingId = b.id
+            WHERE dr.driverId = @driverId
+              AND dr.status = 'Accepted'
+              AND b.travelDate = @travelDate
+              AND dr.id <> @requestId
+          )
           BEGIN
             SET @resultCode = 409;
             SET @message =
-              N'This driver is already booked. Please select another driver.';
+              N'Driver already booked for this date';
           END
           ELSE
           BEGIN
@@ -989,9 +1091,8 @@ app.patch(
             SET status = 'Confirmed'
             WHERE id = @bookingId;
 
-            UPDATE Drivers
-            SET available = 0
-            WHERE id = @driverId;
+            -- Do not set Drivers.available = 0 here.
+            -- Availability is checked per travel date.
 
             SET @message =
               N'Driver request accepted successfully!';
@@ -1042,6 +1143,12 @@ app.patch(
 
         const result = rows[0];
 
+        if (!result) {
+          return res.status(500).json({
+            message: "No result returned"
+          });
+        }
+
         if (result.resultCode !== 200) {
           return res.status(result.resultCode).json({
             message: result.message
@@ -1063,6 +1170,7 @@ app.patch(
     );
   }
 );
+
 
 
 
@@ -1129,9 +1237,9 @@ app.get("/api/driver-profile", (req, res) => {
 });
 
 
-// ==============================
+
 // 15. START BACKEND SERVER
-// ==============================
+
 
 app.listen(PORT, () => {
   console.log(

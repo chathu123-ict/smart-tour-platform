@@ -131,18 +131,21 @@ function DriverDashboard() {
         );
       }
 
-      // Update the request status
+      // Update status while keeping customer and trip details
       setRequests((previous) =>
         previous.map((request) =>
-          request.id === requestId
-            ? result.request
+          Number(request.id) === Number(requestId)
+            ? {
+                ...request,
+                ...result.request
+              }
             : request
         )
       );
 
       setMessage(result.message);
 
-      // Refresh driver availability
+      // Refresh driver profile
       if (status === "Accepted") {
         await loadDriverProfile();
       }
@@ -185,7 +188,9 @@ function DriverDashboard() {
 
       <h1>Driver Dashboard</h1>
 
-      <p>Manage your driver profile and tour requests.</p>
+      <p>
+        Manage your driver profile and tour requests.
+      </p>
 
       {/* Driver Profile Section */}
       <div
@@ -236,7 +241,7 @@ function DriverDashboard() {
             </p>
 
             <p>
-              <strong>Availability:</strong>{" "}
+              <strong>Account Availability:</strong>{" "}
               <strong
                 style={{
                   color: driverProfile.available
@@ -245,9 +250,19 @@ function DriverDashboard() {
                 }}
               >
                 {driverProfile.available
-                  ? "Available"
-                  : "Unavailable"}
+                  ? "Active"
+                  : "Inactive"}
               </strong>
+            </p>
+
+            <p
+              style={{
+                fontSize: "13px",
+                color: "#64748b"
+              }}
+            >
+              Trip availability is checked separately
+              for each travel date.
             </p>
           </>
         )}
@@ -279,17 +294,64 @@ function DriverDashboard() {
         <div
           key={request.id}
           className="tour-card"
+          style={{
+            padding: "25px",
+            marginBottom: "20px",
+            borderRadius: "12px"
+          }}
         >
-          <h3>{request.tourName}</h3>
-
-          <p>Request ID: {request.id}</p>
-
-          <p>Booking ID: {request.bookingId}</p>
-
-          <p>Driver: {request.driverName}</p>
+          <h3 style={{ color: "#166534" }}>
+            {request.tourName}
+          </h3>
 
           <p>
-            Status:{" "}
+            <strong>Request ID:</strong>{" "}
+            {request.id}
+          </p>
+
+          <p>
+            <strong>Booking ID:</strong>{" "}
+            {request.bookingId}
+          </p>
+
+          <hr />
+
+          {/* Customer and Trip Details */}
+          <h4 style={{ color: "#166534" }}>
+            Customer & Trip Details
+          </h4>
+
+          <p>
+            <strong>Customer Name:</strong>{" "}
+            {request.customerName || "Not available"}
+          </p>
+
+          <p>
+            <strong>Travel Date:</strong>{" "}
+            {request.travelDate || "Not available"}
+          </p>
+
+          <p>
+            <strong>Number of Passengers:</strong>{" "}
+            {request.people ?? "Not available"}
+          </p>
+
+          <p>
+            <strong>Tour Package:</strong>{" "}
+            {request.tourName}
+          </p>
+
+          <hr />
+
+          {/* Driver Details */}
+          <p>
+            <strong>Driver:</strong>{" "}
+            {request.driverName}
+          </p>
+
+          {/* Request Status */}
+          <p>
+            <strong>Request Status:</strong>{" "}
             <strong
               style={{
                 color:

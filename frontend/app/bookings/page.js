@@ -21,16 +21,16 @@ function BookingsPage() {
 
   const [bookings, setBookings] = useState([]);
   const [drivers, setDrivers] = useState([]);
+  const [driversByDate, setDriversByDate] = useState({});
   const [requests, setRequests] = useState([]);
 
   const [selectedDrivers, setSelectedDrivers] = useState({});
   const [message, setMessage] = useState("Loading...");
   const [loadingId, setLoadingId] = useState(null);
   const [loginRequired, setLoginRequired] = useState(false);
-
   const [dataLoaded, setDataLoaded] = useState(false);
 
-  // Load customer's booking information
+  // Load customer bookings and drivers by travel date
   useEffect(() => {
     let active = true;
 
@@ -61,7 +61,21 @@ function BookingsPage() {
           throw new Error("Failed to load bookings");
         }
 
-        const [driverRes, requestRes] = await Promise.all([
+        const bookingData = await bookingRes.json();
+
+        // Get unique travel dates
+        const uniqueDates = [
+          ...new Set(
+            bookingData.map((booking) => booking.travelDate)
+          )
+        ];
+
+        // Load all drivers, requests and date-specific drivers
+        const [
+          driverRes,
+          requestRes,
+          ...dateResponses
+        ] = await Promise.all([
           fetch(`${API_URL}/api/drivers`, {
             credentials: "include",
             cache: "no-store"
@@ -70,23 +84,51 @@ function BookingsPage() {
           fetch(`${API_URL}/api/driver-requests`, {
             credentials: "include",
             cache: "no-store"
-          })
+          }),
+
+          ...uniqueDates.map((date) =>
+            fetch(
+              `${API_URL}/api/drivers?travelDate=${encodeURIComponent(date)}`,
+              {
+                credentials: "include",
+                cache: "no-store"
+              }
+            )
+          )
         ]);
 
-        if (!driverRes.ok || !requestRes.ok) {
+        const allResponses = [
+          driverRes,
+          requestRes,
+          ...dateResponses
+        ];
+
+        if (!allResponses.every((response) => response.ok)) {
           throw new Error("Failed to load driver information");
         }
 
-        const bookingData = await bookingRes.json();
         const driverData = await driverRes.json();
         const requestData = await requestRes.json();
+
+        const dateDriverLists = await Promise.all(
+          dateResponses.map((response) => response.json())
+        );
+
+        // Store available drivers separately for each date
+        const dateMap = Object.fromEntries(
+          uniqueDates.map((date, index) => [
+            date,
+            dateDriverLists[index]
+          ])
+        );
 
         if (!active) return;
 
         setBookings(bookingData);
         setDrivers(driverData);
+        setDriversByDate(dateMap);
 
-        // Show requests related to this customer's bookings
+        // Filter requests belonging to this customer
         const bookingIds = new Set(
           bookingData.map((booking) => Number(booking.id))
         );
@@ -186,21 +228,25 @@ function BookingsPage() {
   }
 
   return (
-    <main style={{
-      padding: "40px",
-      fontFamily: "Arial",
-      minHeight: "100vh"
-    }}>
+    <main
+      style={{
+        padding: "40px",
+        fontFamily: "Arial",
+        minHeight: "100vh"
+      }}
+    >
 
       {/* Header */}
-      <div style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        flexWrap: "wrap",
-        gap: "15px",
-        marginBottom: "25px"
-      }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "15px",
+          marginBottom: "25px"
+        }}
+      >
 
         <Link href="/" className="back-btn">
           ← Back to Home
@@ -218,13 +264,15 @@ function BookingsPage() {
 
       {/* Booking Success Message */}
       {(newBookingId || bookingSuccess) && (
-        <div style={{
-          backgroundColor: "#dcfce7",
-          color: "#166534",
-          padding: "18px",
-          borderRadius: "10px",
-          marginBottom: "20px"
-        }}>
+        <div
+          style={{
+            backgroundColor: "#dcfce7",
+            color: "#166534",
+            padding: "18px",
+            borderRadius: "10px",
+            marginBottom: "20px"
+          }}
+        >
           <h3 style={{ marginTop: 0 }}>
             Booking Submitted Successfully!
           </h3>
@@ -239,12 +287,14 @@ function BookingsPage() {
 
       {/* General Messages */}
       {message && (
-        <p style={{
-          padding: "10px 0",
-          color: message.startsWith("Error")
-            ? "#dc2626"
-            : "#374151"
-        }}>
+        <p
+          style={{
+            padding: "10px 0",
+            color: message.startsWith("Error")
+              ? "#dc2626"
+              : "#374151"
+          }}
+        >
           {message}
         </p>
       )}
@@ -281,6 +331,7 @@ function BookingsPage() {
               )
           );
 
+          // Get assigned driver details
           const assignedDriver =
             currentRequest?.status === "Accepted"
               ? drivers.find(
@@ -289,6 +340,13 @@ function BookingsPage() {
                     Number(currentRequest.driverId)
                 )
               : null;
+
+          // Get drivers available on this booking date
+          const availableDrivers = (
+            driversByDate[booking.travelDate] || []
+          ).filter(
+            (driver) => driver.availableForDate
+          );
 
           return (
             <div
@@ -303,11 +361,14 @@ function BookingsPage() {
               }}
             >
 
+              {/* New Booking Highlight */}
               {isNewBooking && (
-                <p style={{
-                  color: "#166534",
-                  fontWeight: "bold"
-                }}>
+                <p
+                  style={{
+                    color: "#166534",
+                    fontWeight: "bold"
+                  }}
+                >
                   ✓ Your New Booking
                 </p>
               )}
@@ -323,12 +384,14 @@ function BookingsPage() {
               {/* Booking Status */}
               <p>
                 Booking Status:{" "}
-                <strong style={{
-                  color:
-                    booking.status === "Confirmed"
-                      ? "green"
-                      : "orange"
-                }}>
+                <strong
+                  style={{
+                    color:
+                      booking.status === "Confirmed"
+                        ? "green"
+                        : "orange"
+                  }}
+                >
                   {booking.status}
                 </strong>
               </p>
@@ -394,6 +457,10 @@ function BookingsPage() {
 
                 <p>This booking is confirmed.</p>
 
+              ) : booking.status !== "Pending" ? (
+
+                <p>Driver requests are unavailable for this booking.</p>
+
               ) : (
 
                 /* Request New Driver */
@@ -401,9 +468,7 @@ function BookingsPage() {
                   <h3>Request a Driver</h3>
 
                   <select
-                    value={
-                      selectedDrivers[booking.id] || ""
-                    }
+                    value={selectedDrivers[booking.id] || ""}
                     onChange={(event) =>
                       setSelectedDrivers((previous) => ({
                         ...previous,
@@ -415,24 +480,31 @@ function BookingsPage() {
                       Select Driver
                     </option>
 
-                    {drivers
-                      .filter((driver) => driver.available)
-                      .map((driver) => (
-                        <option
-                          key={driver.id}
-                          value={driver.id}
-                        >
-                          {driver.name} - {driver.vehicle}
-                        </option>
-                      ))}
+                    {availableDrivers.map((driver) => (
+                      <option
+                        key={driver.id}
+                        value={driver.id}
+                      >
+                        {driver.name} - {driver.vehicle}
+                      </option>
+                    ))}
                   </select>
+
+                  {availableDrivers.length === 0 && (
+                    <p style={{ color: "#dc2626" }}>
+                      No drivers available for this date.
+                    </p>
+                  )}
 
                   <br />
                   <br />
 
                   <button
                     className="details-btn"
-                    disabled={loadingId !== null}
+                    disabled={
+                      loadingId !== null ||
+                      availableDrivers.length === 0
+                    }
                     onClick={() =>
                       requestDriver(booking.id)
                     }
