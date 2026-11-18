@@ -278,9 +278,8 @@ app.get("/api/tours", (req, res) => {
 });
 
 
-// 5. REGISTER CUSTOMER
 
-
+ // 5. REGISTER CUSTOMER / DRIVER / TRANSLATOR
 
 app.post("/api/register", async (req, res) => {
   const {
@@ -289,9 +288,12 @@ app.post("/api/register", async (req, res) => {
     password,
     role = "Customer",
     vehicle,
-    location
-  } = req.body;
+    location,
+    languages,
+    feePerDay
+  } = req.body || {};
 
+  // Basic validation
   if (
     typeof name !== "string" ||
     typeof email !== "string" ||
@@ -304,6 +306,17 @@ app.post("/api/register", async (req, res) => {
 
   const cleanName = name.trim();
   const cleanEmail = email.trim().toLowerCase();
+
+  const roles = {
+    customer: "Customer",
+    driver: "Driver",
+    translator: "Translator"
+  };
+
+  const selectedRole =
+    typeof role === "string"
+      ? roles[role.trim().toLowerCase()]
+      : null;
 
   if (!cleanName || cleanName.length > 100) {
     return res.status(400).json({
@@ -329,26 +342,81 @@ app.post("/api/register", async (req, res) => {
     });
   }
 
-  if (role !== "Customer" && role !== "Driver") {
+  if (!selectedRole) {
     return res.status(400).json({
       message: "Invalid account role"
     });
   }
 
-  if (
-    role === "Driver" &&
-    (
+  // Driver validation
+  let cleanVehicle = "";
+  let cleanLocation = "";
+
+  if (selectedRole === "Driver") {
+    if (
       typeof vehicle !== "string" ||
-      typeof location !== "string" ||
-      !vehicle.trim() ||
-      !location.trim() ||
-      vehicle.trim().length > 100 ||
-      location.trim().length > 100
-    )
-  ) {
-    return res.status(400).json({
-      message: "Valid vehicle and location are required"
-    });
+      typeof location !== "string"
+    ) {
+      return res.status(400).json({
+        message: "Vehicle and location are required"
+      });
+    }
+
+    cleanVehicle = vehicle.trim();
+    cleanLocation = location.trim();
+
+    if (
+      !cleanVehicle ||
+      !cleanLocation ||
+      cleanVehicle.length > 100 ||
+      cleanLocation.length > 100
+    ) {
+      return res.status(400).json({
+        message: "Invalid vehicle or location"
+      });
+    }
+  }
+
+  // Translator validation
+  let cleanLanguages = "";
+  let translatorFee = 0;
+
+  if (selectedRole === "Translator") {
+    if (typeof languages !== "string") {
+      return res.status(400).json({
+        message: "Languages are required"
+      });
+    }
+
+    cleanLanguages = languages.trim();
+
+    if (
+      !cleanLanguages ||
+      cleanLanguages.length > 300
+    ) {
+      return res.status(400).json({
+        message: "Invalid languages"
+      });
+    }
+
+    const feeText = String(feePerDay ?? "").trim();
+
+    if (!/^\d+(?:\.\d{1,2})?$/.test(feeText)) {
+      return res.status(400).json({
+        message: "Invalid daily fee"
+      });
+    }
+
+    translatorFee = Number(feeText);
+
+    if (
+      !Number.isFinite(translatorFee) ||
+      translatorFee > 99999999.99
+    ) {
+      return res.status(400).json({
+        message: "Invalid daily fee"
+      });
+    }
   }
 
   try {
@@ -364,9 +432,12 @@ app.post("/api/register", async (req, res) => {
       DECLARE @role NVARCHAR(20) = ?;
       DECLARE @vehicle NVARCHAR(100) = ?;
       DECLARE @location NVARCHAR(100) = ?;
+      DECLARE @languages NVARCHAR(300) = ?;
+      DECLARE @feePerDay DECIMAL(10,2) = ?;
 
       DECLARE @driverId INT = NULL;
-      DECLARE @newUserId INT;
+      DECLARE @translatorId INT = NULL;
+      DECLARE @newUserId INT = NULL;
       DECLARE @resultCode INT = 201;
       DECLARE @message NVARCHAR(200) = N'';
 
@@ -384,6 +455,8 @@ app.post("/api/register", async (req, res) => {
         END
         ELSE
         BEGIN
+
+          -- Create driver profile
           IF @role = 'Driver'
           BEGIN
             INSERT INTO Drivers
@@ -391,15 +464,44 @@ app.post("/api/register", async (req, res) => {
             VALUES
               (@name, @vehicle, @location, 1);
 
-            SET @driverId = CONVERT(INT, SCOPE_IDENTITY());
+            SET @driverId =
+              CONVERT(INT, SCOPE_IDENTITY());
           END
 
-          INSERT INTO Users
-            (name, email, passwordHash, role, driverId)
-          VALUES
-            (@name, @email, @passwordHash, @role, @driverId);
+          -- Create translator profile
+          IF @role = 'Translator'
+          BEGIN
+            INSERT INTO Translators
+              (name, languages, feePerDay, available)
+            VALUES
+              (@name, @languages, @feePerDay, 1);
 
-          SET @newUserId = CONVERT(INT, SCOPE_IDENTITY());
+            SET @translatorId =
+              CONVERT(INT, SCOPE_IDENTITY());
+          END
+
+          -- Create login account
+          INSERT INTO Users
+            (
+              name,
+              email,
+              passwordHash,
+              role,
+              driverId,
+              translatorId
+            )
+          VALUES
+            (
+              @name,
+              @email,
+              @passwordHash,
+              @role,
+              @driverId,
+              @translatorId
+            );
+
+          SET @newUserId =
+            CONVERT(INT, SCOPE_IDENTITY());
 
           SET @message = N'Registration successful!';
         END
@@ -420,7 +522,8 @@ app.post("/api/register", async (req, res) => {
         @name AS name,
         @email AS email,
         @role AS role,
-        @driverId AS driverId;
+        @driverId AS driverId,
+        @translatorId AS translatorId;
     `;
 
     sql.query(
@@ -430,9 +533,11 @@ app.post("/api/register", async (req, res) => {
         cleanName,
         cleanEmail,
         passwordHash,
-        role,
-        role === "Driver" ? vehicle.trim() : "",
-        role === "Driver" ? location.trim() : ""
+        selectedRole,
+        cleanVehicle,
+        cleanLocation,
+        cleanLanguages,
+        translatorFee
       ],
       (error, rows) => {
         if (error) {
@@ -453,7 +558,13 @@ app.post("/api/register", async (req, res) => {
           });
         }
 
-        const result = rows[0];
+        const result = rows?.[0];
+
+        if (!result) {
+          return res.status(500).json({
+            message: "No registration result returned"
+          });
+        }
 
         if (result.resultCode !== 201) {
           return res.status(result.resultCode).json({
@@ -461,27 +572,28 @@ app.post("/api/register", async (req, res) => {
           });
         }
 
-        res.status(201).json({
+        return res.status(201).json({
           message: result.message,
           user: {
             id: result.id,
             name: result.name,
             email: result.email,
             role: result.role,
-            driverId: result.driverId
+            driverId: result.driverId,
+            translatorId: result.translatorId
           }
         });
       }
     );
-
   } catch (error) {
     console.error("Registration Error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       message: "Registration failed"
     });
   }
 });
+
 
 
 
@@ -510,7 +622,8 @@ app.post("/api/login", (req, res) => {
       email,
       passwordHash,
       role,
-      driverId
+      driverId,
+      translatorId
     FROM Users
     WHERE email = ?
   `;
@@ -556,12 +669,13 @@ app.post("/api/login", (req, res) => {
           }
 
           req.session.user = {
-            id: user.id,
-            name: user.name,
-            email: user.email,
-            role: user.role,
-            driverId: user.driverId ?? null
-          };
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  driverId: user.driverId ?? null,
+  translatorId: user.translatorId ?? null
+};
 
           req.session.save((saveError) => {
             if (saveError) {
@@ -786,7 +900,7 @@ app.get(
 );
 
 
-// 11. GET DRIVERS
+// 11.1 GET DRIVERS
 
 
 
@@ -858,8 +972,109 @@ app.get("/api/drivers", (req, res) => {
 
 
 
+ // 11.2 GET ALL TRANSLATORS
 
-// 12. CREATE DRIVER REQUEST
+app.get("/api/translators", (req, res) => {
+  const { language, travelDate } = req.query;
+
+  // Validate language
+  if (
+    language !== undefined &&
+    (typeof language !== "string" ||
+      !language.trim() ||
+      language.length > 100)
+  ) {
+    return res.status(400).json({
+      message: "Invalid language"
+    });
+  }
+
+  // Validate travel date
+  if (travelDate !== undefined) {
+    if (
+      typeof travelDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(travelDate) ||
+      !Number.isFinite(Date.parse(travelDate)) ||
+      new Date(travelDate).toISOString().slice(0, 10) !== travelDate
+    ) {
+      return res.status(400).json({
+        message: "Invalid travel date"
+      });
+    }
+  }
+
+  const query = `
+    SELECT
+      t.id,
+      t.name,
+      t.languages,
+      t.feePerDay,
+      t.available,
+
+      CASE
+        WHEN ? IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM TranslatorRequests tr
+            INNER JOIN Bookings b
+              ON tr.bookingId = b.id
+            WHERE tr.translatorId = t.id
+              AND tr.status = 'Accepted'
+              AND b.status <> 'Cancelled'
+              AND b.travelDate = TRY_CONVERT(DATE, ?)
+          )
+        THEN CAST(0 AS BIT)
+        ELSE t.available
+      END AS availableForDate
+
+    FROM Translators t
+    ORDER BY t.id
+  `;
+
+  sql.query(
+    connectionString,
+    query,
+    [travelDate || null, travelDate || null],
+    (error, rows) => {
+      if (error) {
+        console.error("Translators Error:", error);
+
+        return res.status(500).json({
+          message: "Failed to load translators"
+        });
+      }
+
+      let translators = rows.map((translator) => ({
+        ...translator,
+        available: Boolean(translator.available),
+        availableForDate: Boolean(translator.availableForDate)
+      }));
+
+      // Filter by selected language
+      if (language) {
+        const selectedLanguage = language.trim().toLowerCase();
+
+        translators = translators.filter((translator) => {
+          const supportedLanguages = String(
+            translator.languages || ""
+          )
+            .split(",")
+            .map((item) => item.trim().toLowerCase());
+
+          return supportedLanguages.includes(selectedLanguage);
+        });
+      }
+
+      res.json(translators);
+    }
+  );
+});
+
+
+
+
+
+// 12.1 CREATE DRIVER REQUEST
 
 
 
@@ -1084,6 +1299,746 @@ app.post(
     );
   }
 );
+
+
+
+
+
+ // 12.2 CREATE TRANSLATOR REQUEST
+
+app.post(
+  "/api/translator-requests",
+  requireRole("customer"),
+  (req, res) => {
+    const { bookingId, translatorId } = req.body || {};
+
+    const bookingIdNumber = Number(bookingId);
+    const translatorIdNumber = Number(translatorId);
+
+    if (
+      !Number.isSafeInteger(bookingIdNumber) ||
+      bookingIdNumber < 1 ||
+      !Number.isSafeInteger(translatorIdNumber) ||
+      translatorIdNumber < 1
+    ) {
+      return res.status(400).json({
+        message: "Invalid booking or translator ID"
+      });
+    }
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @bookingId INT = ?;
+      DECLARE @translatorId INT = ?;
+      DECLARE @email NVARCHAR(150) = ?;
+
+      DECLARE @resultCode INT = 201;
+      DECLARE @message NVARCHAR(200) = N'';
+      DECLARE @requestId INT = NULL;
+
+      DECLARE @translatorName NVARCHAR(100);
+      DECLARE @languages NVARCHAR(300);
+      DECLARE @feePerDay DECIMAL(10,2);
+      DECLARE @available BIT;
+
+      DECLARE @bookingStatus NVARCHAR(30);
+      DECLARE @travelDate DATE;
+      DECLARE @tourName NVARCHAR(200);
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Verify customer owns the booking
+        SELECT
+          @bookingStatus = b.status,
+          @travelDate = b.travelDate,
+          @tourName = t.name
+        FROM Bookings b WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN Tours t
+          ON b.tourId = t.id
+        WHERE b.id = @bookingId
+          AND LOWER(b.email) = @email;
+
+        IF @bookingStatus IS NULL
+        BEGIN
+          SET @resultCode = 404;
+          SET @message = N'Booking not found';
+        END
+        ELSE IF @bookingStatus NOT IN ('Pending', 'Confirmed')
+        BEGIN
+          SET @resultCode = 409;
+          SET @message = N'Booking is not active';
+        END
+        ELSE
+        BEGIN
+
+          -- Expire requests older than 10 minutes
+          UPDATE TranslatorRequests
+          SET
+            status = 'Expired',
+            respondedAt = SYSDATETIME()
+          WHERE bookingId = @bookingId
+            AND status = 'Pending'
+            AND createdAt <= DATEADD(
+              MINUTE, -10, SYSDATETIME()
+            );
+
+          -- Get translator details and lock profile
+          SELECT
+            @translatorName = name,
+            @languages = languages,
+            @feePerDay = feePerDay,
+            @available = available
+          FROM Translators WITH (UPDLOCK, HOLDLOCK)
+          WHERE id = @translatorId;
+
+          IF @translatorName IS NULL
+          BEGIN
+            SET @resultCode = 404;
+            SET @message = N'Translator not found';
+          END
+          ELSE IF ISNULL(@available, 0) = 0
+          BEGIN
+            SET @resultCode = 409;
+            SET @message = N'Translator is unavailable';
+          END
+          ELSE IF EXISTS (
+            SELECT 1
+            FROM TranslatorRequests tr
+            INNER JOIN Bookings b
+              ON tr.bookingId = b.id
+            WHERE tr.translatorId = @translatorId
+              AND tr.status = 'Accepted'
+              AND b.status <> 'Cancelled'
+              AND b.travelDate = @travelDate
+          )
+          BEGIN
+            SET @resultCode = 409;
+            SET @message =
+              N'Translator already booked for this date';
+          END
+          ELSE IF EXISTS (
+            SELECT 1
+            FROM TranslatorRequests
+            WHERE bookingId = @bookingId
+              AND status IN ('Pending', 'Accepted')
+          )
+          BEGIN
+            SET @resultCode = 409;
+            SET @message =
+              N'Booking already has an active translator request';
+          END
+          ELSE
+          BEGIN
+
+            -- Create translator request
+            INSERT INTO TranslatorRequests
+              (bookingId, translatorId, status)
+            VALUES
+              (@bookingId, @translatorId, 'Pending');
+
+            SET @requestId =
+              CONVERT(INT, SCOPE_IDENTITY());
+
+            SET @message =
+              N'Translator request sent successfully!';
+
+          END
+        END
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+
+      SELECT
+        @resultCode AS resultCode,
+        @message AS message,
+        @requestId AS id,
+        @bookingId AS bookingId,
+        @translatorId AS translatorId,
+        @translatorName AS translatorName,
+        @languages AS languages,
+        @feePerDay AS feePerDay,
+        @tourName AS tourName;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [
+        bookingIdNumber,
+        translatorIdNumber,
+        req.session.user.email.trim().toLowerCase()
+      ],
+      (error, rows) => {
+        if (error) {
+          console.error("Translator Request Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to create translator request"
+          });
+        }
+
+        const result = rows?.[0];
+
+        if (!result) {
+          return res.status(500).json({
+            message: "No result returned"
+          });
+        }
+
+        if (result.resultCode !== 201) {
+          return res.status(result.resultCode).json({
+            message: result.message
+          });
+        }
+
+        return res.status(201).json({
+          message: result.message,
+          request: {
+            id: result.id,
+            bookingId: result.bookingId,
+            translatorId: result.translatorId,
+            translatorName: result.translatorName,
+            languages: result.languages,
+            feePerDay: result.feePerDay,
+            tourName: result.tourName,
+            status: "Pending"
+          }
+        });
+      }
+    );
+  }
+);
+
+
+
+
+
+ // 12.3 GET TRANSLATOR BOOKING REQUESTS
+
+app.get(
+  "/api/translator-requests",
+  requireRole("translator"),
+  (req, res) => {
+    const translatorId = Number(
+      req.session.user.translatorId
+    );
+
+    if (
+      !Number.isInteger(translatorId) ||
+      translatorId < 1
+    ) {
+      return res.status(403).json({
+        message: "Translator profile not found"
+      });
+    }
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @translatorId INT = ?;
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Cancel pending requests for cancelled bookings
+        UPDATE tr
+        SET
+          tr.status = 'Cancelled',
+          tr.respondedAt = SYSDATETIME()
+        FROM TranslatorRequests tr
+        INNER JOIN Bookings b
+          ON tr.bookingId = b.id
+        WHERE tr.translatorId = @translatorId
+          AND tr.status = 'Pending'
+          AND b.status = 'Cancelled';
+
+        -- Expire pending requests after 10 minutes
+        UPDATE TranslatorRequests
+        SET
+          status = 'Expired',
+          respondedAt = SYSDATETIME()
+        WHERE translatorId = @translatorId
+          AND status = 'Pending'
+          AND createdAt <= DATEADD(
+            MINUTE, -10, SYSDATETIME()
+          );
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+
+      SELECT
+        tr.id,
+        tr.bookingId,
+        tr.translatorId,
+        tr.status,
+        tr.createdAt,
+        tr.respondedAt,
+
+
+
+CASE
+  WHEN tr.status = 'Pending' THEN
+    CASE
+      WHEN DATEDIFF(
+        SECOND,
+        SYSDATETIME(),
+        DATEADD(MINUTE, 10, tr.createdAt)
+      ) > 0
+      THEN DATEDIFF(
+        SECOND,
+        SYSDATETIME(),
+        DATEADD(MINUTE, 10, tr.createdAt)
+      )
+      ELSE 0
+    END
+  ELSE 0
+END AS remainingSeconds,
+
+
+
+
+        b.name AS customerName,
+        b.travelDate,
+        b.people,
+        b.status AS bookingStatus,
+
+        t.name AS tourName,
+
+        translator.name AS translatorName,
+        translator.languages,
+        translator.feePerDay
+
+      FROM TranslatorRequests tr
+
+      INNER JOIN Bookings b
+        ON tr.bookingId = b.id
+
+      INNER JOIN Tours t
+        ON b.tourId = t.id
+
+      INNER JOIN Translators translator
+        ON tr.translatorId = translator.id
+
+      WHERE tr.translatorId = @translatorId
+
+      ORDER BY tr.createdAt DESC, tr.id DESC;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [translatorId],
+      (error, rows) => {
+        if (error) {
+          console.error(
+            "Get Translator Requests Error:",
+            error
+          );
+
+          return res.status(500).json({
+            message: "Failed to load translator requests"
+          });
+        }
+
+        res.json({
+          message: "Translator requests loaded",
+          requests: rows || []
+        });
+      }
+    );
+  }
+);
+
+
+
+ // 12.4 TRANSLATOR ACCEPT / REJECT REQUEST
+
+app.patch(
+  "/api/translator-requests/:id",
+  requireRole("translator"),
+  (req, res) => {
+    const requestId = Number(req.params.id);
+    const translatorId = Number(
+      req.session.user.translatorId
+    );
+
+    const status =
+      typeof req.body?.status === "string"
+        ? req.body.status.trim().toLowerCase()
+        : "";
+
+    if (
+      !Number.isSafeInteger(requestId) ||
+      requestId < 1 ||
+      !Number.isSafeInteger(translatorId) ||
+      translatorId < 1
+    ) {
+      return res.status(400).json({
+        message: "Invalid request or translator ID"
+      });
+    }
+
+    if (!["accepted", "rejected"].includes(status)) {
+      return res.status(400).json({
+        message: "Status must be Accepted or Rejected"
+      });
+    }
+
+    const newStatus =
+      status === "accepted" ? "Accepted" : "Rejected";
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @requestId INT = ?;
+      DECLARE @translatorId INT = ?;
+      DECLARE @newStatus NVARCHAR(20) = ?;
+
+      DECLARE @resultCode INT = 200;
+      DECLARE @message NVARCHAR(200) = N'';
+
+      DECLARE @bookingId INT;
+      DECLARE @currentStatus NVARCHAR(20);
+      DECLARE @createdAt DATETIME2;
+
+      DECLARE @bookingStatus NVARCHAR(30);
+      DECLARE @travelDate DATE;
+      DECLARE @available BIT;
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Lock translator to prevent simultaneous acceptance
+        SELECT @available = available
+        FROM Translators WITH (UPDLOCK, HOLDLOCK)
+        WHERE id = @translatorId;
+
+        IF @available IS NULL
+        BEGIN
+          SET @resultCode = 403;
+          SET @message = N'Translator profile not found';
+        END
+        ELSE
+        BEGIN
+
+          -- Find request belonging to logged-in translator
+          SELECT
+            @bookingId = bookingId,
+            @currentStatus = status,
+            @createdAt = createdAt
+          FROM TranslatorRequests WITH (UPDLOCK, HOLDLOCK)
+          WHERE id = @requestId
+            AND translatorId = @translatorId;
+
+          IF @bookingId IS NULL
+          BEGIN
+            SET @resultCode = 404;
+            SET @message = N'Request not found';
+          END
+          ELSE
+          BEGIN
+
+            SELECT
+              @bookingStatus = status,
+              @travelDate = travelDate
+            FROM Bookings WITH (UPDLOCK, HOLDLOCK)
+            WHERE id = @bookingId;
+
+            IF @bookingStatus = 'Cancelled'
+               AND @currentStatus = 'Pending'
+            BEGIN
+              UPDATE TranslatorRequests
+              SET
+                status = 'Cancelled',
+                respondedAt = SYSDATETIME()
+              WHERE id = @requestId;
+
+              SET @currentStatus = 'Cancelled';
+              SET @resultCode = 409;
+              SET @message = N'Booking was cancelled';
+            END
+            ELSE IF @currentStatus <> 'Pending'
+            BEGIN
+              SET @resultCode = 409;
+              SET @message = N'Request is not pending';
+            END
+            ELSE IF @createdAt <= DATEADD(
+              MINUTE, -10, SYSDATETIME()
+            )
+            BEGIN
+              UPDATE TranslatorRequests
+              SET
+                status = 'Expired',
+                respondedAt = SYSDATETIME()
+              WHERE id = @requestId;
+
+              SET @currentStatus = 'Expired';
+              SET @resultCode = 409;
+              SET @message = N'Request has expired';
+            END
+            ELSE IF @bookingStatus NOT IN (
+              'Pending', 'Confirmed'
+            )
+            BEGIN
+              SET @resultCode = 409;
+              SET @message = N'Booking is not active';
+            END
+            ELSE IF @newStatus = 'Accepted'
+              AND @available = 0
+            BEGIN
+              SET @resultCode = 409;
+              SET @message = N'Translator is unavailable';
+            END
+            ELSE IF @newStatus = 'Accepted'
+              AND EXISTS (
+                SELECT 1
+                FROM TranslatorRequests tr
+                INNER JOIN Bookings b
+                  ON tr.bookingId = b.id
+                WHERE tr.translatorId = @translatorId
+                  AND tr.id <> @requestId
+                  AND tr.status = 'Accepted'
+                  AND b.status <> 'Cancelled'
+                  AND b.travelDate = @travelDate
+              )
+            BEGIN
+              SET @resultCode = 409;
+              SET @message =
+                N'Already booked for this date';
+            END
+            ELSE
+            BEGIN
+
+              UPDATE TranslatorRequests
+              SET
+                status = @newStatus,
+                respondedAt = SYSDATETIME()
+              WHERE id = @requestId
+                AND status = 'Pending';
+
+              SET @currentStatus = @newStatus;
+
+              IF @newStatus = 'Accepted'
+                SET @message =
+                  N'Translator request accepted successfully!';
+              ELSE
+                SET @message =
+                  N'Translator request rejected successfully!';
+
+            END
+          END
+        END
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+
+      SELECT
+        @resultCode AS resultCode,
+        @message AS message,
+        @requestId AS id,
+        @bookingId AS bookingId,
+        @translatorId AS translatorId,
+        @currentStatus AS status;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [requestId, translatorId, newStatus],
+      (error, rows) => {
+        if (error) {
+          console.error(
+            "Translator Response Error:",
+            error
+          );
+
+          return res.status(500).json({
+            message: "Failed to update translator request"
+          });
+        }
+
+        const result = rows?.[0];
+
+        if (!result) {
+          return res.status(500).json({
+            message: "No result returned"
+          });
+        }
+
+        if (result.resultCode !== 200) {
+          return res.status(result.resultCode).json({
+            message: result.message
+          });
+        }
+
+        return res.json({
+          message: result.message,
+          request: {
+            id: result.id,
+            bookingId: result.bookingId,
+            translatorId: result.translatorId,
+            status: result.status
+          }
+        });
+      }
+    );
+  }
+);
+
+
+
+ // 12.5 CUSTOMER - VIEW TRANSLATOR REQUEST STATUS
+
+app.get(
+  "/api/customer/translator-requests",
+  requireRole("customer"),
+  (req, res) => {
+    const email = String(
+      req.session.user.email || ""
+    ).trim().toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({
+        message: "Customer email not found"
+      });
+    }
+
+    const query = `
+      SET NOCOUNT ON;
+
+      DECLARE @email NVARCHAR(255) = ?;
+
+      -- Cancel requests if booking is cancelled
+      UPDATE tr
+      SET
+        tr.status = 'Cancelled',
+        tr.respondedAt = SYSDATETIME()
+      FROM TranslatorRequests tr
+      INNER JOIN Bookings b
+        ON tr.bookingId = b.id
+      WHERE LOWER(b.email) = @email
+        AND b.status = 'Cancelled'
+        AND tr.status IN ('Pending', 'Accepted');
+
+      -- Expire requests after 10 minutes
+      UPDATE tr
+      SET
+        tr.status = 'Expired',
+        tr.respondedAt = SYSDATETIME()
+      FROM TranslatorRequests tr
+      INNER JOIN Bookings b
+        ON tr.bookingId = b.id
+      WHERE LOWER(b.email) = @email
+        AND tr.status = 'Pending'
+        AND tr.createdAt <= DATEADD(
+          MINUTE, -10, SYSDATETIME()
+        );
+
+      -- Get customer translator requests
+      SELECT
+        tr.id,
+        tr.bookingId,
+        tr.translatorId,
+        tr.status,
+        tr.createdAt,
+        tr.respondedAt,
+
+        t.name AS tourName,
+
+        translator.name AS translatorName,
+        translator.languages,
+        translator.feePerDay,
+
+        b.travelDate,
+        b.status AS bookingStatus,
+
+        CASE
+          WHEN tr.status = 'Pending' THEN
+            CASE
+              WHEN DATEDIFF(
+                SECOND,
+                SYSDATETIME(),
+                DATEADD(MINUTE, 10, tr.createdAt)
+              ) > 0
+              THEN DATEDIFF(
+                SECOND,
+                SYSDATETIME(),
+                DATEADD(MINUTE, 10, tr.createdAt)
+              )
+              ELSE 0
+            END
+          ELSE 0
+        END AS remainingSeconds
+
+      FROM TranslatorRequests tr
+
+      INNER JOIN Bookings b
+        ON tr.bookingId = b.id
+
+      INNER JOIN Tours t
+        ON b.tourId = t.id
+
+      INNER JOIN Translators translator
+        ON tr.translatorId = translator.id
+
+      WHERE LOWER(b.email) = @email
+
+      ORDER BY tr.id DESC;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [email],
+      (error, rows) => {
+        if (error) {
+          console.error(
+            "Customer Translator Requests Error:",
+            error
+          );
+
+          return res.status(500).json({
+            message:
+              "Failed to load translator requests"
+          });
+        }
+
+        res.json({
+          message: "Translator requests loaded",
+          requests: rows || []
+        });
+      }
+    );
+  }
+);
+
+
+
+
+
 
 
 
@@ -1629,4 +2584,53 @@ expirePendingDriverRequests();
 setInterval(() => {
   expirePendingDriverRequests();
 }, 30 * 1000);
+
+
+
+
+ //18. AUTOMATIC TRANSLATOR REQUEST EXPIRY
+
+const translatorExpiryTimer = setInterval(() => {
+  const query = `
+    SET NOCOUNT ON;
+
+    -- Cancel requests for cancelled bookings
+    UPDATE tr
+    SET
+      tr.status = 'Cancelled',
+      tr.respondedAt = SYSDATETIME()
+    FROM TranslatorRequests tr
+    INNER JOIN Bookings b
+      ON tr.bookingId = b.id
+    WHERE b.status = 'Cancelled'
+      AND tr.status IN ('Pending', 'Accepted');
+
+    -- Expire pending translator requests
+    UPDATE TranslatorRequests
+    SET
+      status = 'Expired',
+      respondedAt = SYSDATETIME()
+    WHERE status = 'Pending'
+      AND createdAt <= DATEADD(
+        MINUTE, -10, SYSDATETIME()
+      );
+  `;
+
+  sql.query(
+    connectionString,
+    query,
+    [],
+    (error) => {
+      if (error) {
+        console.error(
+          "Translator Expiry Error:",
+          error
+        );
+      }
+    }
+  );
+}, 15000);
+
+translatorExpiryTimer.unref?.();
+
 

@@ -24,8 +24,6 @@ function BookingsPage() {
   const [requests, setRequests] = useState([]);
 
   const [selectedDrivers, setSelectedDrivers] = useState({});
-
-  // Customer permission for automatic fallback
   const [autoFallbackChoices, setAutoFallbackChoices] = useState({});
 
   const [message, setMessage] = useState("Loading...");
@@ -33,7 +31,7 @@ function BookingsPage() {
   const [loginRequired, setLoginRequired] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
 
-  // Load bookings and date-based driver availability
+  // Load bookings and driver availability
   useEffect(() => {
     let active = true;
 
@@ -155,7 +153,7 @@ function BookingsPage() {
     };
   }, []);
 
-  // Automatically refresh driver request statuses
+  // Automatically refresh driver requests
   useEffect(() => {
     let active = true;
 
@@ -189,7 +187,7 @@ function BookingsPage() {
     };
   }, []);
 
-  // Scroll to newly created booking
+  // Scroll to new booking
   useEffect(() => {
     if (!newBookingId || !dataLoaded) return;
 
@@ -227,8 +225,6 @@ function BookingsPage() {
           body: JSON.stringify({
             bookingId: Number(bookingId),
             driverId: Number(driverId),
-
-            // Send customer's permission to backend
             autoFallbackEnabled:
               autoFallbackChoices[bookingId] === true
           })
@@ -297,7 +293,6 @@ function BookingsPage() {
         );
       }
 
-      // Update booking status
       setBookings((previous) =>
         previous.map((item) =>
           Number(item.id) === Number(booking.id)
@@ -306,7 +301,6 @@ function BookingsPage() {
         )
       );
 
-      // Update associated driver requests
       setRequests((previous) =>
         previous.map((request) =>
           Number(request.bookingId) === Number(booking.id) &&
@@ -320,7 +314,6 @@ function BookingsPage() {
         result.message || "Booking cancelled successfully!"
       );
 
-      // Refresh driver availability
       try {
         const driverResponse = await fetch(
           `${API_URL}/api/drivers?travelDate=${encodeURIComponent(booking.travelDate)}`,
@@ -383,7 +376,8 @@ function BookingsPage() {
       <h1>My Booking Dashboard</h1>
 
       <p>
-        View your bookings, request drivers and cancel bookings.
+        View your bookings, request drivers,
+        find translators and cancel bookings.
       </p>
 
       {/* Booking Success Message */}
@@ -462,7 +456,6 @@ function BookingsPage() {
               )
           );
 
-          // Find latest driver request
           const latestRequest = requests.find(
             (request) =>
               Number(request.bookingId) === Number(booking.id)
@@ -470,6 +463,27 @@ function BookingsPage() {
 
           const requestExpired =
             latestRequest?.status === "Expired";
+
+          const previousFailedRequest = currentRequest
+            ? requests
+                .filter(
+                  (request) =>
+                    Number(request.bookingId) ===
+                      Number(booking.id) &&
+                    Number(request.id) <
+                      Number(currentRequest.id) &&
+                    ["Rejected", "Expired"].includes(
+                      request.status
+                    )
+                )
+                .sort(
+                  (a, b) =>
+                    Number(b.id) - Number(a.id)
+                )[0]
+            : null;
+
+          const hasAlternativeDriver =
+            Boolean(previousFailedRequest);
 
           const assignedDriver =
             currentRequest?.status === "Accepted"
@@ -582,6 +596,37 @@ function BookingsPage() {
                       Accepted
                     </strong>
                   </p>
+
+                  {hasAlternativeDriver && (
+                    <div
+                      style={{
+                        backgroundColor: "#dcfce7",
+                        border: "1px solid #86efac",
+                        borderRadius: "8px",
+                        padding: "15px",
+                        marginTop: "15px"
+                      }}
+                    >
+                      <h4 style={{ color: "#166534" }}>
+                        Alternative Driver Accepted!
+                      </h4>
+
+                      <p>
+                        Your previous driver was unavailable.
+                      </p>
+
+                      <p>
+                        New Driver:{" "}
+                        <strong>
+                          {currentRequest.driverName}
+                        </strong>
+                      </p>
+
+                      <p>
+                        Your booking is now confirmed.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
               ) : currentRequest?.status === "Pending" ? (
@@ -627,6 +672,47 @@ function BookingsPage() {
                   <p>
                     Waiting for driver confirmation...
                   </p>
+
+                  {hasAlternativeDriver && (
+                    <div
+                      style={{
+                        backgroundColor: "#eff6ff",
+                        border: "1px solid #93c5fd",
+                        borderRadius: "8px",
+                        padding: "15px",
+                        marginTop: "15px"
+                      }}
+                    >
+                      <h4 style={{ color: "#1d4ed8" }}>
+                        Alternative Driver Request
+                      </h4>
+
+                      <p>
+                        Previous Driver:{" "}
+                        <strong>
+                          {previousFailedRequest.driverName}
+                        </strong>
+                      </p>
+
+                      <p>
+                        Previous Status:{" "}
+                        <strong>
+                          {previousFailedRequest.status}
+                        </strong>
+                      </p>
+
+                      <p>
+                        New Driver:{" "}
+                        <strong>
+                          {currentRequest.driverName}
+                        </strong>
+                      </p>
+
+                      <p>
+                        Waiting for the new driver to accept.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
               ) : booking.status === "Confirmed" ? (
@@ -672,7 +758,7 @@ function BookingsPage() {
                     </p>
                   )}
 
-                  {/* Automatic Fallback Permission Checkbox */}
+                  {/* Automatic Fallback Permission */}
                   <label
                     style={{
                       display: "flex",
@@ -736,6 +822,45 @@ function BookingsPage() {
                       ? "Processing..."
                       : "Request Driver"}
                   </button>
+                </div>
+              )}
+
+              {/* NEW: Find Translator Button */}
+              {canCancel && (
+                <div style={{ marginTop: "20px" }}>
+                  <Link
+  href={{
+    pathname: "/translators",
+    query: {
+      bookingId: booking.id,
+      travelDate: String(booking.travelDate).slice(0, 10)
+    }
+  }}
+  style={{
+    display: "inline-block",
+    padding: "10px 18px",
+    backgroundColor: "#2563eb",
+    color: "white",
+    textDecoration: "none",
+    borderRadius: "6px",
+    fontWeight: "bold"
+  }}
+>
+  Find a Translator (Optional)
+</Link>
+
+                  <p
+                    style={{
+                      fontSize: "13px",
+                      color: "#555",
+                      marginTop: "8px"
+                    }}
+                  >
+                    Use Booking ID {booking.id} and
+                    travel date{" "}
+                    {String(booking.travelDate).slice(0, 10)}
+                    {" "}on the translator page.
+                  </p>
                 </div>
               )}
 

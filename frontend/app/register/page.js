@@ -142,10 +142,14 @@ export default function RegisterPage() {
 
         {message && <p style={{ color: "red" }}>{message}</p>}
 
-        <p>
-          Are you a driver?{" "}
-          <Link href="/register/driver">Register as Driver</Link>
-        </p>
+        
+<p>
+  Are you a Driver or Translator?{" "}
+  <Link href="/register/driver">
+    Register Here
+  </Link>
+</p>
+
 
         <p>
           Already have an account?{" "}

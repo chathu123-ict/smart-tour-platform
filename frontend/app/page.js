@@ -4,15 +4,12 @@
 import { useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 import LogoutButton from "./components/LogoutButton";
 
 const API = "http://127.0.0.1:5000";
 
 export default function Home() {
-  const router = useRouter();
-
   const [tours, setTours] = useState([]);
   const [user, setUser] = useState(null);
   const [checkingLogin, setCheckingLogin] = useState(true);
@@ -23,17 +20,14 @@ export default function Home() {
     let active = true;
 
     async function loadPage() {
+      // Load tour packages
       try {
-        const [toursResponse, sessionResponse] =
-          await Promise.all([
-            fetch(`${API}/api/tours`, {
-              cache: "no-store"
-            }),
-            fetch(`${API}/api/me`, {
-              credentials: "include",
-              cache: "no-store"
-            })
-          ]);
+        const toursResponse = await fetch(
+          `${API}/api/tours`,
+          {
+            cache: "no-store"
+          }
+        );
 
         if (!toursResponse.ok) {
           throw new Error("Failed to load tours");
@@ -44,23 +38,47 @@ export default function Home() {
         if (active) {
           setTours(toursData);
         }
+      } catch (err) {
+        if (active) {
+          setError(err.message);
+        }
+      } finally {
+        if (active) {
+          setLoadingTours(false);
+        }
+      }
+
+      // Check logged-in user and role
+      try {
+        const sessionResponse = await fetch(
+          `${API}/api/me`,
+          {
+            credentials: "include",
+            cache: "no-store"
+          }
+        );
 
         if (sessionResponse.ok) {
-          const sessionData = await sessionResponse.json();
+          const sessionData =
+            await sessionResponse.json();
 
           if (active) {
             setUser(sessionData.user || null);
           }
+        } else {
+          if (active) {
+            setUser(null);
+          }
         }
+      } catch (err) {
+        console.error("Session check error:", err);
 
-      } catch (error) {
         if (active) {
-          setError(error.message);
+          setUser(null);
         }
       } finally {
         if (active) {
           setCheckingLogin(false);
-          setLoadingTours(false);
         }
       }
     }
@@ -72,35 +90,15 @@ export default function Home() {
     };
   }, []);
 
-  const role = String(user?.role || "").toLowerCase();
+  // Normalize role
+  const role = String(user?.role || "")
+    .trim()
+    .toLowerCase();
 
-  function openBookingDashboard() {
-    if (!user) {
-      router.push("/login?next=%2Fbookings");
-      return;
-    }
-
-    if (role !== "customer") {
-      router.push("/driver-dashboard");
-      return;
-    }
-
-    router.push("/bookings");
-  }
-
-  function openDriverDashboard() {
-    if (!user) {
-      router.push("/login?next=%2Fdriver-dashboard");
-      return;
-    }
-
-    if (role !== "driver") {
-      router.push("/bookings");
-      return;
-    }
-
-    router.push("/driver-dashboard");
-  }
+  const isCustomer = role === "customer";
+  const isDriver = role === "driver";
+  const isTranslator = role === "translator";
+  const isGuest = !user;
 
   return (
     <main
@@ -120,7 +118,7 @@ export default function Home() {
           flexWrap: "wrap"
         }}
       >
-        {!checkingLogin && !user && (
+        {!checkingLogin && isGuest && (
           <>
             <Link
               href="/login"
@@ -153,7 +151,10 @@ export default function Home() {
         {!checkingLogin && user && (
           <>
             <span>
-              Welcome, <strong>{user.name}</strong>
+              Welcome,{" "}
+              <strong>{user.name}</strong>
+              {" "}
+              ({user.role})
             </span>
 
             <LogoutButton />
@@ -166,41 +167,75 @@ export default function Home() {
         <h2>Smart Tour</h2>
 
         <nav>
-          <Link href="/">Home</Link>
+          {/* Everyone */}
+          <Link href="/">
+            Home
+          </Link>
 
-          <a href="#tours">Tours</a>
+          <a href="#tours">
+            Tours
+          </a>
 
-          <Link href="/drivers">Drivers</Link>
+          {/* Customer and Guest */}
+          {!checkingLogin &&
+            (isCustomer || isGuest) && (
+              <>
+                <Link href="/drivers">
+                  Drivers
+                </Link>
 
-          {!checkingLogin && role !== "driver" && (
-            <button
-              type="button"
-              onClick={openBookingDashboard}
-              style={navButtonStyle}
-            >
+                <Link href="/translators">
+                  Find Translators
+                </Link>
+              </>
+            )}
+
+          {/* Customer Booking Dashboard */}
+          {!checkingLogin && isCustomer && (
+            <Link href="/bookings">
               Booking Dashboard
-            </button>
+            </Link>
           )}
 
-          {!checkingLogin && role === "driver" && (
-            <button
-              type="button"
-              onClick={openDriverDashboard}
-              style={navButtonStyle}
-            >
+          {/* Guest - Login before bookings */}
+          {!checkingLogin && isGuest && (
+            <Link href="/login?next=%2Fbookings">
+              Booking Dashboard
+            </Link>
+          )}
+
+          {/* Driver Dashboard */}
+          {!checkingLogin && isDriver && (
+            <Link href="/driver-dashboard">
               Driver Dashboard
-            </button>
+            </Link>
+          )}
+
+          {/* Translator Dashboard */}
+          {!checkingLogin && isTranslator && (
+            <Link href="/translator-dashboard">
+              Translator Dashboard
+            </Link>
           )}
         </nav>
       </header>
 
-      <h1>Welcome to Smart Tour Sri Lanka</h1>
+      {/* Home Content */}
+      <h1>
+        Welcome to Smart Tour Sri Lanka
+      </h1>
 
-      <p>Explore beautiful destinations in Sri Lanka!</p>
+      <p>
+        Explore beautiful destinations in Sri Lanka!
+      </p>
 
-      <h2 id="tours">Our Tour Packages</h2>
+      <h2 id="tours">
+        Our Tour Packages
+      </h2>
 
-      {loadingTours && <p>Loading tours...</p>}
+      {loadingTours && (
+        <p>Loading tours...</p>
+      )}
 
       {error && (
         <p style={{ color: "red" }}>
@@ -208,9 +243,13 @@ export default function Home() {
         </p>
       )}
 
-      {!loadingTours && !error && tours.length === 0 && (
-        <p>No tour packages available.</p>
-      )}
+      {!loadingTours &&
+        !error &&
+        tours.length === 0 && (
+          <p>
+            No tour packages available.
+          </p>
+        )}
 
       {/* Tour Cards */}
       <div className="tour-grid">
@@ -229,13 +268,19 @@ export default function Home() {
               className="tour-image"
             />
 
-            <h3>{tour.name}</h3>
+            <h3>
+              {tour.name}
+            </h3>
 
-            <p>Location: {tour.location}</p>
+            <p>
+              Location: {tour.location}
+            </p>
 
             <p>
               Price: Rs.{" "}
-              {Number(tour.price).toLocaleString()}
+              {Number(
+                tour.price
+              ).toLocaleString()}
             </p>
 
             <Link
@@ -250,12 +295,3 @@ export default function Home() {
     </main>
   );
 }
-
-const navButtonStyle = {
-  border: "none",
-  background: "transparent",
-  color: "inherit",
-  font: "inherit",
-  cursor: "pointer",
-  padding: "0"
-};
