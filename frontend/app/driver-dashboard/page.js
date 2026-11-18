@@ -9,18 +9,51 @@ import LogoutButton from "../components/LogoutButton";
 
 const API_URL = "http://127.0.0.1:5000";
 
-// Driver Dashboard
+// Convert seconds to MM:SS
+function formatTime(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remaining = seconds % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(
+    remaining
+  ).padStart(2, "0")}`;
+}
+
+// Calculate remaining time using backend data
+function getRemainingTime(request, now) {
+  if (request.status !== "Pending") {
+    return 0;
+  }
+
+  const seconds = Number(request.remainingSeconds);
+
+  if (
+    request.remainingSeconds == null ||
+    !Number.isFinite(seconds)
+  ) {
+    return null;
+  }
+
+  const elapsed = Math.max(
+    0,
+    (now - request.receivedAt) / 1000
+  );
+
+  return Math.max(0, Math.ceil(seconds - elapsed));
+}
+
 function DriverDashboard() {
   const [requests, setRequests] = useState([]);
   const [message, setMessage] = useState("Loading...");
   const [loadingId, setLoadingId] = useState(null);
-
   const [requestErrors, setRequestErrors] = useState({});
 
-  // Driver Profile States
   const [driverProfile, setDriverProfile] = useState(null);
   const [profileLoading, setProfileLoading] = useState(true);
   const [profileError, setProfileError] = useState("");
+
+  // Current time for live countdown
+  const [now, setNow] = useState(() => Date.now());
 
   // Load driver profile
   async function loadDriverProfile() {
@@ -31,7 +64,7 @@ function DriverDashboard() {
         `${API_URL}/api/driver-profile`,
         {
           credentials: "include",
-          cache: "no-store"
+          cache: "no-store",
         }
       );
 
@@ -44,7 +77,6 @@ function DriverDashboard() {
       }
 
       setDriverProfile(result);
-
     } catch (error) {
       setProfileError(error.message);
     } finally {
@@ -59,7 +91,7 @@ function DriverDashboard() {
         `${API_URL}/api/driver-requests`,
         {
           credentials: "include",
-          cache: "no-store"
+          cache: "no-store",
         }
       );
 
@@ -77,27 +109,55 @@ function DriverDashboard() {
 
       const data = await response.json();
 
-      setRequests(data);
-      setMessage("");
+      // Save the time when API data was received
+      const receivedAt = Date.now();
 
+      setRequests(
+        data.map((request) => ({
+          ...request,
+          receivedAt,
+        }))
+      );
+
+      setNow(receivedAt);
+      setMessage("");
     } catch (error) {
       setMessage("Error: " + error.message);
     }
   }
 
+  // Initial data loading
   useEffect(() => {
     loadDriverProfile();
     loadRequests();
   }, []);
 
-  // Accept or Reject a request
+  // Update countdown every second
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  // Refresh request statuses every 15 seconds
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadRequests();
+    }, 15000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Accept or Reject request
   async function updateStatus(requestId, status) {
     setLoadingId(requestId);
     setMessage("");
 
     setRequestErrors((previous) => ({
       ...previous,
-      [requestId]: ""
+      [requestId]: "",
     }));
 
     try {
@@ -106,12 +166,10 @@ function DriverDashboard() {
         {
           method: "PATCH",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
           },
           credentials: "include",
-          body: JSON.stringify({
-            status
-          })
+          body: JSON.stringify({ status }),
         }
       );
 
@@ -131,13 +189,13 @@ function DriverDashboard() {
         );
       }
 
-      // Update status while keeping customer and trip details
+      // Update request while preserving trip details
       setRequests((previous) =>
         previous.map((request) =>
           Number(request.id) === Number(requestId)
             ? {
                 ...request,
-                ...result.request
+                ...result.request,
               }
             : request
         )
@@ -145,16 +203,17 @@ function DriverDashboard() {
 
       setMessage(result.message);
 
-      // Refresh driver profile
       if (status === "Accepted") {
         await loadDriverProfile();
       }
-
     } catch (error) {
       setRequestErrors((previous) => ({
         ...previous,
-        [requestId]: error.message
+        [requestId]: error.message,
       }));
+
+      // Refresh after failure (including expiry)
+      await loadRequests();
     } finally {
       setLoadingId(null);
     }
@@ -165,7 +224,7 @@ function DriverDashboard() {
       style={{
         padding: "40px",
         fontFamily: "Arial",
-        minHeight: "100vh"
+        minHeight: "100vh",
       }}
     >
       {/* Header */}
@@ -176,7 +235,7 @@ function DriverDashboard() {
           alignItems: "center",
           flexWrap: "wrap",
           gap: "15px",
-          marginBottom: "25px"
+          marginBottom: "25px",
         }}
       >
         <Link href="/" className="back-btn">
@@ -192,7 +251,7 @@ function DriverDashboard() {
         Manage your driver profile and tour requests.
       </p>
 
-      {/* Driver Profile Section */}
+      {/* Driver Profile */}
       <div
         style={{
           padding: "25px",
@@ -201,7 +260,7 @@ function DriverDashboard() {
           marginTop: "25px",
           marginBottom: "30px",
           backgroundColor: "#f0fdf4",
-          boxShadow: "0 3px 10px rgba(0,0,0,0.05)"
+          boxShadow: "0 3px 10px rgba(0,0,0,0.05)",
         }}
       >
         <h2 style={{ color: "#166534" }}>
@@ -246,7 +305,7 @@ function DriverDashboard() {
                 style={{
                   color: driverProfile.available
                     ? "#166534"
-                    : "#dc2626"
+                    : "#dc2626",
                 }}
               >
                 {driverProfile.available
@@ -258,7 +317,7 @@ function DriverDashboard() {
             <p
               style={{
                 fontSize: "13px",
-                color: "#64748b"
+                color: "#64748b",
               }}
             >
               Trip availability is checked separately
@@ -268,158 +327,285 @@ function DriverDashboard() {
         )}
       </div>
 
-      {/* Requests Section */}
+      {/* Requests */}
       <h2>My Tour Requests</h2>
 
-      {/* General Message */}
       {message && (
         <p
           style={{
             color: message.startsWith("Error")
               ? "#dc2626"
-              : "#166534"
+              : "#166534",
           }}
         >
           {message}
         </p>
       )}
 
-      {/* No Requests */}
       {requests.length === 0 && !message && (
         <p>No driver requests found.</p>
       )}
 
-      {/* Driver Request Cards */}
-      {requests.map((request) => (
-        <div
-          key={request.id}
-          className="tour-card"
-          style={{
-            padding: "25px",
-            marginBottom: "20px",
-            borderRadius: "12px"
-          }}
-        >
-          <h3 style={{ color: "#166534" }}>
-            {request.tourName}
-          </h3>
+      {/* Request Cards */}
+      {requests.map((request) => {
+        const remaining = getRemainingTime(
+          request,
+          now
+        );
 
-          <p>
-            <strong>Request ID:</strong>{" "}
-            {request.id}
-          </p>
+        const expiredLocally =
+          request.status === "Pending" &&
+          remaining === 0;
 
-          <p>
-            <strong>Booking ID:</strong>{" "}
-            {request.bookingId}
-          </p>
+        const displayStatus = expiredLocally
+          ? "Expired"
+          : request.status;
 
-          <hr />
+        const canRespond =
+          request.status === "Pending" &&
+          remaining !== 0;
 
-          {/* Customer and Trip Details */}
-          <h4 style={{ color: "#166534" }}>
-            Customer & Trip Details
-          </h4>
+        const isUrgent =
+          remaining !== null &&
+          remaining <= 60;
 
-          <p>
-            <strong>Customer Name:</strong>{" "}
-            {request.customerName || "Not available"}
-          </p>
+        return (
+          <div
+            key={request.id}
+            className="tour-card"
+            style={{
+              padding: "25px",
+              marginBottom: "20px",
+              borderRadius: "12px",
+            }}
+          >
+            <h3 style={{ color: "#166534" }}>
+              {request.tourName}
+            </h3>
 
-          <p>
-            <strong>Travel Date:</strong>{" "}
-            {request.travelDate || "Not available"}
-          </p>
-
-          <p>
-            <strong>Number of Passengers:</strong>{" "}
-            {request.people ?? "Not available"}
-          </p>
-
-          <p>
-            <strong>Tour Package:</strong>{" "}
-            {request.tourName}
-          </p>
-
-          <hr />
-
-          {/* Driver Details */}
-          <p>
-            <strong>Driver:</strong>{" "}
-            {request.driverName}
-          </p>
-
-          {/* Request Status */}
-          <p>
-            <strong>Request Status:</strong>{" "}
-            <strong
-              style={{
-                color:
-                  request.status === "Accepted"
-                    ? "#166534"
-                    : request.status === "Rejected"
-                    ? "#dc2626"
-                    : "#ca8a04"
-              }}
-            >
-              {request.status}
-            </strong>
-          </p>
-
-          {/* Request-specific Error */}
-          {requestErrors[request.id] && (
-            <p
-              role="alert"
-              style={{
-                color: "#b91c1c",
-                backgroundColor: "#fee2e2",
-                padding: "12px",
-                borderRadius: "8px",
-                fontWeight: "bold",
-                marginTop: "12px"
-              }}
-            >
-              ⚠ {requestErrors[request.id]}
+            <p>
+              <strong>Request ID:</strong>{" "}
+              {request.id}
             </p>
-          )}
 
-          {/* Accept / Reject Buttons */}
-          {request.status === "Pending" && (
-            <div
-              style={{
-                display: "flex",
-                gap: "10px",
-                marginTop: "15px"
-              }}
-            >
-              <button
-                className="details-btn"
-                disabled={loadingId !== null}
-                onClick={() =>
-                  updateStatus(request.id, "Accepted")
-                }
-              >
-                {loadingId === request.id
-                  ? "Processing..."
-                  : "Accept"}
-              </button>
+            <p>
+              <strong>Booking ID:</strong>{" "}
+              {request.bookingId}
+            </p>
 
-              <button
-                className="details-btn"
+            <hr />
+
+            <h4 style={{ color: "#166534" }}>
+              Customer & Trip Details
+            </h4>
+
+            <p>
+              <strong>Customer Name:</strong>{" "}
+              {request.customerName || "Not available"}
+            </p>
+
+            <p>
+              <strong>Travel Date:</strong>{" "}
+              {request.travelDate || "Not available"}
+            </p>
+
+            <p>
+              <strong>Number of Passengers:</strong>{" "}
+              {request.people ?? "Not available"}
+            </p>
+
+            <p>
+              <strong>Tour Package:</strong>{" "}
+              {request.tourName}
+            </p>
+
+            <hr />
+
+            <p>
+              <strong>Driver:</strong>{" "}
+              {request.driverName}
+            </p>
+
+            {/* Request Status */}
+            <p>
+              <strong>Request Status:</strong>{" "}
+              <strong
                 style={{
-                  backgroundColor: "#dc2626"
+                  color:
+                    displayStatus === "Accepted"
+                      ? "#166534"
+                      : displayStatus === "Pending"
+                      ? "#ca8a04"
+                      : "#dc2626",
                 }}
-                disabled={loadingId !== null}
-                onClick={() =>
-                  updateStatus(request.id, "Rejected")
-                }
               >
-                Reject
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
+                {displayStatus}
+              </strong>
+            </p>
+
+            {/* Live Countdown */}
+            {request.status === "Pending" &&
+              !expiredLocally && (
+                <div
+                  style={{
+                    backgroundColor: isUrgent
+                      ? "#fee2e2"
+                      : "#eff6ff",
+                    border: `1px solid ${
+                      isUrgent ? "#fca5a5" : "#bfdbfe"
+                    }`,
+                    padding: "20px",
+                    borderRadius: "10px",
+                    textAlign: "center",
+                    marginTop: "20px",
+                    marginBottom: "20px",
+                  }}
+                >
+                  <h4 style={{ marginTop: 0 }}>
+                    Time Remaining to Respond
+                  </h4>
+
+                  <div
+                    style={{
+                      fontSize: "42px",
+                      fontWeight: "bold",
+                      color: isUrgent
+                        ? "#dc2626"
+                        : "#2563eb",
+                    }}
+                  >
+                    {remaining === null
+                      ? "Unavailable"
+                      : formatTime(remaining)}
+                  </div>
+
+                  {remaining !== null && (
+                    <div
+                      style={{
+                        height: "10px",
+                        backgroundColor: "#e5e7eb",
+                        borderRadius: "10px",
+                        marginTop: "15px",
+                        overflow: "hidden",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${
+                            (remaining / 600) * 100
+                          }%`,
+                          height: "100%",
+                          backgroundColor: isUrgent
+                            ? "#dc2626"
+                            : "#2563eb",
+                          transition: "width 1s linear",
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {isUrgent && (
+                    <p
+                      style={{
+                        color: "#dc2626",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      Hurry! Less than 1 minute left.
+                    </p>
+                  )}
+
+                  {remaining === null && (
+                    <p style={{ color: "#dc2626" }}>
+                      Countdown data unavailable.
+                      Check the backend API.
+                    </p>
+                  )}
+                </div>
+              )}
+
+            {/* Expired Message */}
+            {displayStatus === "Expired" && (
+              <div
+                style={{
+                  padding: "15px",
+                  backgroundColor: "#fee2e2",
+                  color: "#991b1b",
+                  borderRadius: "8px",
+                  marginTop: "15px",
+                }}
+              >
+                <strong>Request Expired</strong>
+
+                <p>
+                  The 10-minute response period has ended.
+                  This request can no longer be accepted
+                  or rejected.
+                </p>
+              </div>
+            )}
+
+            {/* Request-specific Error */}
+            {requestErrors[request.id] && (
+              <p
+                role="alert"
+                style={{
+                  color: "#b91c1c",
+                  backgroundColor: "#fee2e2",
+                  padding: "12px",
+                  borderRadius: "8px",
+                  fontWeight: "bold",
+                  marginTop: "12px",
+                }}
+              >
+                ⚠ {requestErrors[request.id]}
+              </p>
+            )}
+
+            {/* Accept / Reject */}
+            {canRespond && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: "10px",
+                  marginTop: "15px",
+                }}
+              >
+                <button
+                  className="details-btn"
+                  disabled={loadingId !== null}
+                  onClick={() =>
+                    updateStatus(
+                      request.id,
+                      "Accepted"
+                    )
+                  }
+                >
+                  {loadingId === request.id
+                    ? "Processing..."
+                    : "Accept"}
+                </button>
+
+                <button
+                  className="details-btn"
+                  style={{
+                    backgroundColor: "#dc2626",
+                  }}
+                  disabled={loadingId !== null}
+                  onClick={() =>
+                    updateStatus(
+                      request.id,
+                      "Rejected"
+                    )
+                  }
+                >
+                  Reject
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </main>
   );
 }

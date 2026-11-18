@@ -10,6 +10,179 @@ const app = express();
 const PORT = 5000;
 
 
+const DRIVER_REQUEST_TIMEOUT_MINUTES = 10;
+
+
+function expirePendingDriverRequests() {
+  const query = `
+    UPDATE DriverRequests
+    SET status = 'Expired'
+    WHERE status = 'Pending'
+      AND createdAt <= DATEADD(
+        MINUTE,
+        -${DRIVER_REQUEST_TIMEOUT_MINUTES},
+        SYSDATETIME()
+      );
+  `;
+
+  sql.query(connectionString, query, (error) => {
+    if (error) {
+      console.error("Driver Timeout Error:", error);
+      return;
+    }
+
+    // Check for automatic fallback after expiry update
+    assignFallbackDriverRequest();
+  });
+}
+
+
+
+function assignFallbackDriverRequest() {
+  const query = `
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @bookingId INT = NULL;
+    DECLARE @driverId INT = NULL;
+    DECLARE @travelDate DATE;
+    DECLARE @requestId INT = NULL;
+
+    BEGIN TRY
+      BEGIN TRANSACTION;
+
+      -- Find a booking that needs automatic fallback
+      SELECT TOP (1)
+        @bookingId = b.id,
+        @travelDate = b.travelDate
+      FROM Bookings b WITH (UPDLOCK, HOLDLOCK)
+      WHERE b.status = 'Pending'
+
+        -- Customer must give permission
+        AND b.autoFallbackEnabled = 1
+
+        -- Previous driver rejected or expired
+        AND EXISTS (
+          SELECT 1
+          FROM DriverRequests dr
+          WHERE dr.bookingId = b.id
+            AND dr.status IN ('Rejected', 'Expired')
+        )
+
+        -- No active request for this booking
+        AND NOT EXISTS (
+          SELECT 1
+          FROM DriverRequests dr
+          WHERE dr.bookingId = b.id
+            AND dr.status IN ('Pending', 'Accepted')
+        )
+
+        -- At least one eligible driver must exist
+        AND EXISTS (
+          SELECT 1
+          FROM Drivers d
+          WHERE d.available = 1
+
+            -- Do not request the same driver again
+            AND NOT EXISTS (
+              SELECT 1
+              FROM DriverRequests dr
+              WHERE dr.bookingId = b.id
+                AND dr.driverId = d.id
+            )
+
+            -- Driver must be free on travel date
+            AND NOT EXISTS (
+              SELECT 1
+              FROM DriverRequests dr
+              INNER JOIN Bookings otherBooking
+                ON dr.bookingId = otherBooking.id
+              WHERE dr.driverId = d.id
+                AND dr.status = 'Accepted'
+                AND otherBooking.travelDate = b.travelDate
+            )
+        )
+      ORDER BY b.id ASC;
+
+      IF @bookingId IS NOT NULL
+      BEGIN
+
+        -- Select an eligible fallback driver
+        SELECT TOP (1)
+          @driverId = d.id
+        FROM Drivers d WITH (UPDLOCK, HOLDLOCK)
+        WHERE d.available = 1
+
+          -- Avoid previously requested drivers
+          AND NOT EXISTS (
+            SELECT 1
+            FROM DriverRequests dr
+            WHERE dr.bookingId = @bookingId
+              AND dr.driverId = d.id
+          )
+
+          -- Avoid drivers booked on the same date
+          AND NOT EXISTS (
+            SELECT 1
+            FROM DriverRequests dr
+            INNER JOIN Bookings otherBooking
+              ON dr.bookingId = otherBooking.id
+            WHERE dr.driverId = d.id
+              AND dr.status = 'Accepted'
+              AND otherBooking.travelDate = @travelDate
+          )
+        ORDER BY d.id ASC;
+
+        IF @driverId IS NOT NULL
+        BEGIN
+
+          -- Automatically send the new request
+          INSERT INTO DriverRequests
+            (bookingId, driverId, status)
+          VALUES
+            (@bookingId, @driverId, 'Pending');
+
+          SET @requestId = SCOPE_IDENTITY();
+
+        END
+      END
+
+      COMMIT TRANSACTION;
+
+    END TRY
+    BEGIN CATCH
+
+      IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+      THROW;
+
+    END CATCH;
+
+    SELECT
+      @bookingId AS bookingId,
+      @driverId AS driverId,
+      @requestId AS requestId;
+  `;
+
+  sql.query(connectionString, query, (error, rows) => {
+    if (error) {
+      console.error("Automatic Fallback Error:", error);
+      return;
+    }
+
+    const result = rows?.[0];
+
+    if (result?.requestId) {
+      console.log(
+        `Automatic fallback request created: Booking ${result.bookingId}, Driver ${result.driverId}`
+      );
+    }
+  });
+}
+
+
+
 // 1. MIDDLEWARE
 
 
@@ -691,11 +864,17 @@ app.get("/api/drivers", (req, res) => {
 
 
 
+
+
 app.post(
   "/api/driver-requests",
   requireRole("customer"),
   (req, res) => {
-    const { bookingId, driverId } = req.body;
+    const {
+      bookingId,
+      driverId,
+      autoFallbackEnabled = false
+    } = req.body;
 
     const bookingIdNumber = Number(bookingId);
     const driverIdNumber = Number(driverId);
@@ -711,6 +890,13 @@ app.post(
       });
     }
 
+    // Validate customer's permission
+    if (typeof autoFallbackEnabled !== "boolean") {
+      return res.status(400).json({
+        message: "Invalid automatic fallback permission"
+      });
+    }
+
     const query = `
       SET NOCOUNT ON;
       SET XACT_ABORT ON;
@@ -718,6 +904,7 @@ app.post(
       DECLARE @bookingId INT = ?;
       DECLARE @driverId INT = ?;
       DECLARE @email NVARCHAR(150) = ?;
+      DECLARE @autoFallbackEnabled BIT = ?;
 
       DECLARE @resultCode INT = 201;
       DECLARE @message NVARCHAR(200) = N'';
@@ -736,7 +923,8 @@ app.post(
           @travelDate = b.travelDate,
           @tourName = t.name
         FROM Bookings b WITH (UPDLOCK, HOLDLOCK)
-        INNER JOIN Tours t ON b.tourId = t.id
+        INNER JOIN Tours t
+          ON b.tourId = t.id
         WHERE b.id = @bookingId
           AND LOWER(b.email) = @email;
 
@@ -748,10 +936,20 @@ app.post(
         ELSE IF @bookingStatus <> 'Pending'
         BEGIN
           SET @resultCode = 409;
-          SET @message = N'Booking already confirmed';
+          SET @message = N'Booking is not pending';
         END
         ELSE
         BEGIN
+
+          -- Expire old pending requests
+          UPDATE DriverRequests
+          SET status = 'Expired'
+          WHERE bookingId = @bookingId
+            AND status = 'Pending'
+            AND createdAt <= DATEADD(
+              MINUTE, -10, SYSDATETIME()
+            );
+
           SELECT
             @driverName = name,
             @available = available
@@ -766,7 +964,8 @@ app.post(
           ELSE IF ISNULL(@available, 0) = 0
           BEGIN
             SET @resultCode = 409;
-            SET @message = N'Driver is inactive or unavailable';
+            SET @message =
+              N'Driver is inactive or unavailable';
           END
           ELSE IF EXISTS (
             SELECT 1
@@ -779,7 +978,8 @@ app.post(
           )
           BEGIN
             SET @resultCode = 409;
-            SET @message = N'Driver already booked for this date';
+            SET @message =
+              N'Driver already booked for this date';
           END
           ELSE IF EXISTS (
             SELECT 1
@@ -794,12 +994,23 @@ app.post(
           END
           ELSE
           BEGIN
+
+            -- Create new driver request
             INSERT INTO DriverRequests
               (bookingId, driverId, status)
-            VALUES (@bookingId, @driverId, 'Pending');
+            VALUES
+              (@bookingId, @driverId, 'Pending');
 
             SET @requestId = SCOPE_IDENTITY();
-            SET @message = N'Driver request sent successfully!';
+
+            -- Save customer's automatic fallback permission
+            UPDATE Bookings
+            SET autoFallbackEnabled = @autoFallbackEnabled
+            WHERE id = @bookingId;
+
+            SET @message =
+              N'Driver request sent successfully!';
+
           END
         END
 
@@ -820,7 +1031,8 @@ app.post(
         @driverId AS driverId,
         @driverName AS driverName,
         @tourName AS tourName,
-        'Pending' AS status;
+        'Pending' AS status,
+        @autoFallbackEnabled AS autoFallbackEnabled;
     `;
 
     sql.query(
@@ -829,7 +1041,8 @@ app.post(
       [
         bookingIdNumber,
         driverIdNumber,
-        req.session.user.email.trim().toLowerCase()
+        req.session.user.email.trim().toLowerCase(),
+        autoFallbackEnabled
       ],
       (error, rows) => {
         if (error) {
@@ -841,6 +1054,12 @@ app.post(
         }
 
         const result = rows[0];
+
+        if (!result) {
+          return res.status(500).json({
+            message: "No result returned"
+          });
+        }
 
         if (result.resultCode !== 201) {
           return res.status(result.resultCode).json({
@@ -856,13 +1075,17 @@ app.post(
             driverId: result.driverId,
             driverName: result.driverName,
             tourName: result.tourName,
-            status: "Pending"
+            status: "Pending",
+            autoFallbackEnabled:
+              Boolean(result.autoFallbackEnabled)
           }
         });
       }
     );
   }
 );
+
+
 
 
 
@@ -912,8 +1135,20 @@ const query = `
     t.name AS tourName,
     b.name AS customerName,
     CONVERT(VARCHAR(10), b.travelDate, 23) AS travelDate,
-    b.people AS people,
-    dr.status
+    
+b.people AS people,
+dr.status,
+CONVERT(VARCHAR(33), dr.createdAt, 126) AS createdAt,
+CASE
+  WHEN DATEADD(MINUTE, 10, dr.createdAt) <= SYSDATETIME()
+    THEN 0
+  ELSE DATEDIFF(
+    SECOND,
+    SYSDATETIME(),
+    DATEADD(MINUTE, 10, dr.createdAt)
+  )
+END AS remainingSeconds
+
   FROM DriverRequests dr
   INNER JOIN Bookings b
     ON dr.bookingId = b.id
@@ -1004,6 +1239,19 @@ app.patch(
         FROM Drivers WITH (UPDLOCK, HOLDLOCK)
         WHERE id = @sessionDriverId;
 
+
+
+-- Expire this request if 10 minutes have passed
+UPDATE DriverRequests
+SET status = 'Expired'
+WHERE id = @requestId
+  AND driverId = @sessionDriverId
+  AND status = 'Pending'
+  AND createdAt <= DATEADD(
+    MINUTE, -10, SYSDATETIME()
+  );
+
+
         SELECT
           @currentStatus = status,
           @bookingId = bookingId,
@@ -1017,11 +1265,18 @@ app.patch(
           SET @resultCode = 404;
           SET @message = N'Driver request not found';
         END
-        ELSE IF @currentStatus <> 'Pending'
-        BEGIN
-          SET @resultCode = 400;
-          SET @message = N'Request already processed';
-        END
+        
+ELSE IF @currentStatus = 'Expired'
+BEGIN
+    SET @resultCode = 409;
+    SET @message = N'Driver request has expired';
+END
+ELSE IF @currentStatus <> 'Pending'
+BEGIN
+    SET @resultCode = 400;
+    SET @message = N'Request already processed';
+END
+
         ELSE IF @newStatus = 'Rejected'
         BEGIN
           UPDATE DriverRequests
@@ -1365,3 +1620,13 @@ app.listen(PORT, () => {
     `Smart Tour Backend running on http://127.0.0.1:${PORT}`
   );
 });
+
+
+
+// 17. EXPIRED REQUESTS CHECK ARE CHECKD EVERY 30 SECCOND WHILE RUNNING 
+expirePendingDriverRequests();
+
+setInterval(() => {
+  expirePendingDriverRequests();
+}, 30 * 1000);
+

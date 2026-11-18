@@ -24,6 +24,10 @@ function BookingsPage() {
   const [requests, setRequests] = useState([]);
 
   const [selectedDrivers, setSelectedDrivers] = useState({});
+
+  // Customer permission for automatic fallback
+  const [autoFallbackChoices, setAutoFallbackChoices] = useState({});
+
   const [message, setMessage] = useState("Loading...");
   const [loadingId, setLoadingId] = useState(null);
   const [loginRequired, setLoginRequired] = useState(false);
@@ -151,6 +155,40 @@ function BookingsPage() {
     };
   }, []);
 
+  // Automatically refresh driver request statuses
+  useEffect(() => {
+    let active = true;
+
+    async function refreshRequests() {
+      try {
+        const response = await fetch(
+          `${API_URL}/api/driver-requests`,
+          {
+            credentials: "include",
+            cache: "no-store"
+          }
+        );
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (active) {
+          setRequests(data);
+        }
+      } catch (error) {
+        console.error("Request refresh error:", error);
+      }
+    }
+
+    const interval = setInterval(refreshRequests, 15000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, []);
+
   // Scroll to newly created booking
   useEffect(() => {
     if (!newBookingId || !dataLoaded) return;
@@ -188,7 +226,11 @@ function BookingsPage() {
           credentials: "include",
           body: JSON.stringify({
             bookingId: Number(bookingId),
-            driverId: Number(driverId)
+            driverId: Number(driverId),
+
+            // Send customer's permission to backend
+            autoFallbackEnabled:
+              autoFallbackChoices[bookingId] === true
           })
         }
       );
@@ -222,7 +264,7 @@ function BookingsPage() {
     }
   }
 
-  // NEW: Cancel booking
+  // Cancel booking
   async function cancelBooking(booking) {
     const confirmed = window.confirm(
       `Are you sure you want to cancel booking #${booking.id}?`
@@ -278,7 +320,7 @@ function BookingsPage() {
         result.message || "Booking cancelled successfully!"
       );
 
-      // Refresh driver availability for the cancelled date
+      // Refresh driver availability
       try {
         const driverResponse = await fetch(
           `${API_URL}/api/drivers?travelDate=${encodeURIComponent(booking.travelDate)}`,
@@ -420,6 +462,15 @@ function BookingsPage() {
               )
           );
 
+          // Find latest driver request
+          const latestRequest = requests.find(
+            (request) =>
+              Number(request.bookingId) === Number(booking.id)
+          );
+
+          const requestExpired =
+            latestRequest?.status === "Expired";
+
           const assignedDriver =
             currentRequest?.status === "Accepted"
               ? drivers.find(
@@ -537,6 +588,31 @@ function BookingsPage() {
                 <div>
                   <h3>Driver Request</h3>
 
+                  {requestExpired && (
+                    <div
+                      style={{
+                        backgroundColor: "#fff3cd",
+                        padding: "15px",
+                        borderRadius: "8px",
+                        marginBottom: "15px",
+                        border: "1px solid #ffe69c"
+                      }}
+                    >
+                      <h4 style={{ color: "#856404" }}>
+                        Driver Request Expired
+                      </h4>
+
+                      <p>
+                        Your previous driver did not respond
+                        within 10 minutes.
+                      </p>
+
+                      <p>
+                        Please select another available driver.
+                      </p>
+                    </div>
+                  )}
+
                   <p>
                     Driver: {currentRequest.driverName}
                   </p>
@@ -566,6 +642,7 @@ function BookingsPage() {
                 <div>
                   <h3>Request a Driver</h3>
 
+                  {/* Driver Selection */}
                   <select
                     value={selectedDrivers[booking.id] || ""}
                     onChange={(event) =>
@@ -595,9 +672,56 @@ function BookingsPage() {
                     </p>
                   )}
 
-                  <br />
-                  <br />
+                  {/* Automatic Fallback Permission Checkbox */}
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: "10px",
+                      marginTop: "18px",
+                      marginBottom: "8px",
+                      cursor: "pointer"
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={
+                        autoFallbackChoices[booking.id] === true
+                      }
+                      disabled={loadingId !== null}
+                      onChange={(event) =>
+                        setAutoFallbackChoices((previous) => ({
+                          ...previous,
+                          [booking.id]: event.target.checked
+                        }))
+                      }
+                      style={{ marginTop: "3px" }}
+                    />
 
+                    <span>
+                      <strong>
+                        Automatically find another driver
+                      </strong>
+
+                      <span
+                        style={{
+                          display: "block",
+                          color: "#555",
+                          fontSize: "13px",
+                          marginTop: "4px",
+                          lineHeight: "1.5"
+                        }}
+                      >
+                        If this driver rejects or does not
+                        respond within 10 minutes, I agree
+                        to send a request to another available
+                        driver. The next driver must accept
+                        before my booking is confirmed.
+                      </span>
+                    </span>
+                  </label>
+
+                  {/* Request Driver Button */}
                   <button
                     className="details-btn"
                     disabled={
@@ -615,7 +739,7 @@ function BookingsPage() {
                 </div>
               )}
 
-              {/* NEW: Cancel Booking Button */}
+              {/* Cancel Booking Button */}
               {canCancel && (
                 <div style={{ marginTop: "20px" }}>
                   <button
