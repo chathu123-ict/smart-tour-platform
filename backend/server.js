@@ -745,7 +745,7 @@ app.post(
           SET @resultCode = 404;
           SET @message = N'Booking not found';
         END
-        ELSE IF @bookingStatus = 'Confirmed'
+        ELSE IF @bookingStatus <> 'Pending'
         BEGIN
           SET @resultCode = 409;
           SET @message = N'Booking already confirmed';
@@ -1238,7 +1238,126 @@ app.get("/api/driver-profile", (req, res) => {
 
 
 
-// 15. START BACKEND SERVER
+
+// 15. CANCEL CUSTOMER BOOKING
+
+app.patch(
+  "/api/bookings/:id/cancel",
+  requireRole("customer"),
+  (req, res) => {
+    const bookingId = Number(req.params.id);
+    const email = req.session.user.email.trim().toLowerCase();
+
+    if (!Number.isInteger(bookingId) || bookingId < 1) {
+      return res.status(400).json({
+        message: "Invalid booking ID"
+      });
+    }
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @bookingId INT = ?;
+      DECLARE @email NVARCHAR(150) = ?;
+
+      DECLARE @currentStatus NVARCHAR(30);
+      DECLARE @resultCode INT = 200;
+      DECLARE @message NVARCHAR(200) = N'';
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        SELECT @currentStatus = status
+        FROM Bookings WITH (UPDLOCK, HOLDLOCK)
+        WHERE id = @bookingId
+          AND LOWER(email) = @email;
+
+        IF @currentStatus IS NULL
+        BEGIN
+          SET @resultCode = 404;
+          SET @message = N'Booking not found';
+        END
+        ELSE IF @currentStatus = 'Cancelled'
+        BEGIN
+          SET @resultCode = 409;
+          SET @message = N'Booking already cancelled';
+        END
+        ELSE IF @currentStatus NOT IN ('Pending', 'Confirmed')
+        BEGIN
+          SET @resultCode = 409;
+          SET @message = N'This booking cannot be cancelled';
+        END
+        ELSE
+        BEGIN
+          UPDATE Bookings
+          SET status = 'Cancelled'
+          WHERE id = @bookingId;
+
+          UPDATE DriverRequests
+          SET status = 'Cancelled'
+          WHERE bookingId = @bookingId
+            AND status IN ('Pending', 'Accepted');
+
+          SET @message = N'Booking cancelled successfully!';
+        END
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+
+      SELECT
+        @resultCode AS resultCode,
+        @message AS message,
+        @bookingId AS bookingId,
+        CASE
+          WHEN @resultCode = 200 THEN 'Cancelled'
+          ELSE @currentStatus
+        END AS status;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [bookingId, email],
+      (error, rows) => {
+        if (error) {
+          console.error("Cancellation Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to cancel booking"
+          });
+        }
+
+        const result = rows[0];
+
+        if (result.resultCode !== 200) {
+          return res.status(result.resultCode).json({
+            message: result.message
+          });
+        }
+
+        res.json({
+          message: result.message,
+          booking: {
+            id: result.bookingId,
+            status: result.status
+          }
+        });
+      }
+    );
+  }
+);
+
+
+
+
+// 16. START BACKEND SERVER
 
 
 app.listen(PORT, () => {

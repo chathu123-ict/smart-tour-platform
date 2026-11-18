@@ -10,7 +10,6 @@ import LogoutButton from "../components/LogoutButton";
 
 const API_URL = "http://127.0.0.1:5000";
 
-// Customer Booking Dashboard
 function BookingsPage() {
   const searchParams = useSearchParams();
 
@@ -30,7 +29,7 @@ function BookingsPage() {
   const [loginRequired, setLoginRequired] = useState(false);
   const [dataLoaded, setDataLoaded] = useState(false);
 
-  // Load customer bookings and drivers by travel date
+  // Load bookings and date-based driver availability
   useEffect(() => {
     let active = true;
 
@@ -63,14 +62,12 @@ function BookingsPage() {
 
         const bookingData = await bookingRes.json();
 
-        // Get unique travel dates
         const uniqueDates = [
           ...new Set(
             bookingData.map((booking) => booking.travelDate)
           )
         ];
 
-        // Load all drivers, requests and date-specific drivers
         const [
           driverRes,
           requestRes,
@@ -114,7 +111,6 @@ function BookingsPage() {
           dateResponses.map((response) => response.json())
         );
 
-        // Store available drivers separately for each date
         const dateMap = Object.fromEntries(
           uniqueDates.map((date, index) => [
             date,
@@ -128,7 +124,6 @@ function BookingsPage() {
         setDrivers(driverData);
         setDriversByDate(dateMap);
 
-        // Filter requests belonging to this customer
         const bookingIds = new Set(
           bookingData.map((booking) => Number(booking.id))
         );
@@ -156,7 +151,7 @@ function BookingsPage() {
     };
   }, []);
 
-  // Automatically scroll to newly created booking
+  // Scroll to newly created booking
   useEffect(() => {
     if (!newBookingId || !dataLoaded) return;
 
@@ -227,6 +222,96 @@ function BookingsPage() {
     }
   }
 
+  // NEW: Cancel booking
+  async function cancelBooking(booking) {
+    const confirmed = window.confirm(
+      `Are you sure you want to cancel booking #${booking.id}?`
+    );
+
+    if (!confirmed) return;
+
+    setLoadingId(booking.id);
+    setMessage("");
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/bookings/${booking.id}/cancel`,
+        {
+          method: "PATCH",
+          credentials: "include"
+        }
+      );
+
+      const result = await response.json();
+
+      if (response.status === 401) {
+        setLoginRequired(true);
+        throw new Error("Please login first.");
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          result.message || "Failed to cancel booking"
+        );
+      }
+
+      // Update booking status
+      setBookings((previous) =>
+        previous.map((item) =>
+          Number(item.id) === Number(booking.id)
+            ? { ...item, status: "Cancelled" }
+            : item
+        )
+      );
+
+      // Update associated driver requests
+      setRequests((previous) =>
+        previous.map((request) =>
+          Number(request.bookingId) === Number(booking.id) &&
+          ["Pending", "Accepted"].includes(request.status)
+            ? { ...request, status: "Cancelled" }
+            : request
+        )
+      );
+
+      setMessage(
+        result.message || "Booking cancelled successfully!"
+      );
+
+      // Refresh driver availability for the cancelled date
+      try {
+        const driverResponse = await fetch(
+          `${API_URL}/api/drivers?travelDate=${encodeURIComponent(booking.travelDate)}`,
+          {
+            credentials: "include",
+            cache: "no-store"
+          }
+        );
+
+        if (!driverResponse.ok) {
+          throw new Error("Availability refresh failed");
+        }
+
+        const updatedDrivers = await driverResponse.json();
+
+        setDriversByDate((previous) => ({
+          ...previous,
+          [booking.travelDate]: updatedDrivers
+        }));
+
+      } catch (refreshError) {
+        setMessage(
+          "Booking cancelled successfully! Refresh the page to update driver availability."
+        );
+      }
+
+    } catch (error) {
+      setMessage("Error: " + error.message);
+    } finally {
+      setLoadingId(null);
+    }
+  }
+
   return (
     <main
       style={{
@@ -235,7 +320,6 @@ function BookingsPage() {
         minHeight: "100vh"
       }}
     >
-
       {/* Header */}
       <div
         style={{
@@ -247,43 +331,45 @@ function BookingsPage() {
           marginBottom: "25px"
         }}
       >
-
         <Link href="/" className="back-btn">
           ← Back to Home
         </Link>
 
         <LogoutButton />
-
       </div>
 
       <h1>My Booking Dashboard</h1>
 
       <p>
-        View your bookings and request drivers.
+        View your bookings, request drivers and cancel bookings.
       </p>
 
       {/* Booking Success Message */}
-      {(newBookingId || bookingSuccess) && (
-        <div
-          style={{
-            backgroundColor: "#dcfce7",
-            color: "#166534",
-            padding: "18px",
-            borderRadius: "10px",
-            marginBottom: "20px"
-          }}
-        >
-          <h3 style={{ marginTop: 0 }}>
-            Booking Submitted Successfully!
-          </h3>
+      {(newBookingId || bookingSuccess) &&
+        bookings.some(
+          (booking) =>
+            String(booking.id) === String(newBookingId) &&
+            booking.status === "Pending"
+        ) && (
+          <div
+            style={{
+              backgroundColor: "#dcfce7",
+              color: "#166534",
+              padding: "18px",
+              borderRadius: "10px",
+              marginBottom: "20px"
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>
+              Booking Submitted Successfully!
+            </h3>
 
-          <p>
-            Your booking has been saved.
-            Please choose an available driver
-            below to continue your booking.
-          </p>
-        </div>
-      )}
+            <p>
+              Your booking has been saved.
+              Please choose an available driver below.
+            </p>
+          </div>
+        )}
 
       {/* General Messages */}
       {message && (
@@ -299,7 +385,6 @@ function BookingsPage() {
         </p>
       )}
 
-      {/* Login required */}
       {loginRequired && (
         <p>
           <Link href="/login?next=%2Fbookings">
@@ -308,18 +393,22 @@ function BookingsPage() {
         </p>
       )}
 
-      {/* No bookings */}
       {bookings.length === 0 && !message && (
         <p>No bookings found.</p>
       )}
 
       {/* Booking Cards */}
       <div className="tour-grid">
-
         {bookings.map((booking) => {
-
           const isNewBooking =
             String(booking.id) === String(newBookingId);
+
+          const isCancelled =
+            booking.status === "Cancelled";
+
+          const canCancel =
+            booking.status === "Pending" ||
+            booking.status === "Confirmed";
 
           const currentRequest = requests.find(
             (request) =>
@@ -331,7 +420,6 @@ function BookingsPage() {
               )
           );
 
-          // Get assigned driver details
           const assignedDriver =
             currentRequest?.status === "Accepted"
               ? drivers.find(
@@ -341,7 +429,6 @@ function BookingsPage() {
                 )
               : null;
 
-          // Get drivers available on this booking date
           const availableDrivers = (
             driversByDate[booking.travelDate] || []
           ).filter(
@@ -360,9 +447,7 @@ function BookingsPage() {
                 borderRadius: "10px"
               }}
             >
-
-              {/* New Booking Highlight */}
-              {isNewBooking && (
+              {isNewBooking && !isCancelled && (
                 <p
                   style={{
                     color: "#166534",
@@ -389,6 +474,8 @@ function BookingsPage() {
                     color:
                       booking.status === "Confirmed"
                         ? "green"
+                        : isCancelled
+                        ? "red"
                         : "orange"
                   }}
                 >
@@ -398,9 +485,24 @@ function BookingsPage() {
 
               <hr />
 
-              {/* Accepted Driver */}
-              {currentRequest?.status === "Accepted" ? (
+              {/* Cancelled Booking */}
+              {isCancelled ? (
+                <div>
+                  <h3 style={{ color: "red" }}>
+                    Booking Cancelled
+                  </h3>
 
+                  <p>
+                    This booking has been cancelled.
+                  </p>
+
+                  <p>
+                    Driver requests are no longer available
+                    for this booking.
+                  </p>
+                </div>
+
+              ) : currentRequest?.status === "Accepted" ? (
                 <div>
                   <h3>Assigned Driver</h3>
 
@@ -432,8 +534,6 @@ function BookingsPage() {
                 </div>
 
               ) : currentRequest?.status === "Pending" ? (
-
-                /* Pending Driver Request */
                 <div>
                   <h3>Driver Request</h3>
 
@@ -454,16 +554,15 @@ function BookingsPage() {
                 </div>
 
               ) : booking.status === "Confirmed" ? (
-
                 <p>This booking is confirmed.</p>
 
               ) : booking.status !== "Pending" ? (
-
-                <p>Driver requests are unavailable for this booking.</p>
+                <p>
+                  Driver requests are unavailable
+                  for this booking.
+                </p>
 
               ) : (
-
-                /* Request New Driver */
                 <div>
                   <h3>Request a Driver</h3>
 
@@ -510,17 +609,38 @@ function BookingsPage() {
                     }
                   >
                     {loadingId === booking.id
-                      ? "Sending..."
+                      ? "Processing..."
                       : "Request Driver"}
                   </button>
                 </div>
-
               )}
 
+              {/* NEW: Cancel Booking Button */}
+              {canCancel && (
+                <div style={{ marginTop: "20px" }}>
+                  <button
+                    onClick={() => cancelBooking(booking)}
+                    disabled={loadingId !== null}
+                    style={{
+                      padding: "10px 18px",
+                      backgroundColor: "#dc2626",
+                      color: "white",
+                      border: "none",
+                      borderRadius: "6px",
+                      cursor: loadingId !== null
+                        ? "not-allowed"
+                        : "pointer"
+                    }}
+                  >
+                    {loadingId === booking.id
+                      ? "Processing..."
+                      : "Cancel Booking"}
+                  </button>
+                </div>
+              )}
             </div>
           );
         })}
-
       </div>
     </main>
   );
