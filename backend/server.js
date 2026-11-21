@@ -3404,6 +3404,350 @@ app.get("/api/reviews/:type/:id", (req, res) => {
 
 
 
+ // ADMIN DASHBOARD STATISTICS
+
+app.get(
+  "/api/admin/stats",
+  requireRole("admin"),
+  (req, res) => {
+    const query = `
+      SELECT
+        (SELECT COUNT(*) FROM Users
+          WHERE LOWER(role) = 'customer') AS totalCustomers,
+
+        (SELECT COUNT(*) FROM Drivers)
+          AS totalDrivers,
+
+        (SELECT COUNT(*) FROM Translators)
+          AS totalTranslators,
+
+        (SELECT COUNT(*) FROM Tours)
+          AS totalTours,
+
+        (SELECT COUNT(*) FROM Bookings)
+          AS totalBookings,
+
+        (SELECT COUNT(*) FROM Bookings
+          WHERE status = 'Pending')
+          AS pendingBookings,
+
+        (SELECT COUNT(*) FROM Bookings
+          WHERE status = 'Cancelled')
+          AS cancelledBookings,
+
+        (SELECT COUNT(*) FROM TourReviews)
+          AS totalReviews
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      (error, rows) => {
+        if (error) {
+          console.error("Admin Stats Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to load dashboard statistics"
+          });
+        }
+
+        return res.json(rows?.[0] || {});
+      }
+    );
+  }
+);
+
+
+
+
+
+ // ADMIN - MANAGE TOURS
+
+function validateTour(body) {
+  const { name, location, price } = body || {};
+
+  if (
+    typeof name !== "string" ||
+    typeof location !== "string" ||
+    !name.trim() ||
+    !location.trim() ||
+    name.trim().length > 100 ||
+    location.trim().length > 100
+  ) {
+    return {
+      error: "Valid tour name and location are required"
+    };
+  }
+
+  const priceText = String(price ?? "").trim();
+
+  if (!/^\d+(\.\d{1,2})?$/.test(priceText)) {
+    return { error: "Enter a valid tour price" };
+  }
+
+  const amount = Number(priceText);
+
+  if (
+    !Number.isFinite(amount) ||
+    amount <= 0 ||
+    amount > 99999999.99
+  ) {
+    return { error: "Invalid tour price" };
+  }
+
+  return {
+    tour: {
+      name: name.trim(),
+      location: location.trim(),
+      price: amount
+    }
+  };
+}
+
+// GET ALL TOURS FOR ADMIN
+
+app.get(
+  "/api/admin/tours",
+  requireRole("admin"),
+  (req, res) => {
+    const query = `
+      SELECT id, name, location, price
+      FROM Tours
+      ORDER BY id DESC
+    `;
+
+    sql.query(connectionString, query, (error, rows) => {
+      if (error) {
+        console.error("Admin Tours Error:", error);
+
+        return res.status(500).json({
+          message: "Failed to load tours"
+        });
+      }
+
+      res.json(rows || []);
+    });
+  }
+);
+
+// ADD NEW TOUR
+
+app.post(
+  "/api/admin/tours",
+  requireRole("admin"),
+  (req, res) => {
+    const result = validateTour(req.body);
+
+    if (result.error) {
+      return res.status(400).json({
+        message: result.error
+      });
+    }
+
+    const { name, location, price } = result.tour;
+
+    const query = `
+      INSERT INTO Tours (name, location, price)
+      OUTPUT
+        INSERTED.id,
+        INSERTED.name,
+        INSERTED.location,
+        INSERTED.price
+      VALUES (?, ?, ?)
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [name, location, price],
+      (error, rows) => {
+        if (error) {
+          console.error("Add Tour Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to add tour"
+          });
+        }
+
+        return res.status(201).json({
+          message: "Tour added successfully",
+          tour: rows?.[0]
+        });
+      }
+    );
+  }
+);
+
+// UPDATE EXISTING TOUR
+
+app.patch(
+  "/api/admin/tours/:id",
+  requireRole("admin"),
+  (req, res) => {
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({
+        message: "Invalid tour ID"
+      });
+    }
+
+    const result = validateTour(req.body);
+
+    if (result.error) {
+      return res.status(400).json({
+        message: result.error
+      });
+    }
+
+    const { name, location, price } = result.tour;
+
+    const query = `
+      UPDATE Tours
+      SET
+        name = ?,
+        location = ?,
+        price = ?
+      OUTPUT
+        INSERTED.id,
+        INSERTED.name,
+        INSERTED.location,
+        INSERTED.price
+      WHERE id = ?
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [name, location, price, id],
+      (error, rows) => {
+        if (error) {
+          console.error("Update Tour Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to update tour"
+          });
+        }
+
+        if (!rows?.length) {
+          return res.status(404).json({
+            message: "Tour not found"
+          });
+        }
+
+        res.json({
+          message: "Tour updated successfully",
+          tour: rows[0]
+        });
+      }
+    );
+  }
+);
+
+// DELETE TOUR - BLOCK IF BOOKINGS EXIST
+
+app.delete(
+  "/api/admin/tours/:id",
+  requireRole("admin"),
+  (req, res) => {
+    const id = Number(req.params.id);
+
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({
+        message: "Invalid tour ID"
+      });
+    }
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @tourId INT = ?;
+      DECLARE @resultCode INT = 200;
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF NOT EXISTS (
+          SELECT 1 FROM Tours WITH (UPDLOCK, HOLDLOCK)
+          WHERE id = @tourId
+        )
+        BEGIN
+          SET @resultCode = 404;
+        END
+        ELSE IF EXISTS (
+          SELECT 1 FROM Bookings
+          WHERE tourId = @tourId
+        )
+        BEGIN
+          SET @resultCode = 409;
+        END
+        ELSE
+        BEGIN
+          DELETE FROM Tours WHERE id = @tourId;
+        END
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+
+      SELECT @resultCode AS resultCode;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [id],
+      (error, rows) => {
+        if (error) {
+          console.error("Delete Tour Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to delete tour"
+          });
+        }
+
+        const status = rows?.[0]?.resultCode;
+
+        if (status === 404) {
+          return res.status(404).json({
+            message: "Tour not found"
+          });
+        }
+
+        if (status === 409) {
+          return res.status(409).json({
+            message:
+              "Cannot delete a tour with existing bookings"
+          });
+        }
+
+        if (status !== 200) {
+          return res.status(500).json({
+            message: "Unexpected delete result"
+          });
+        }
+
+        res.json({
+          message: "Tour deleted successfully"
+        });
+      }
+    );
+  }
+);
+
+
+
+
+
+
+
+
 
 
 // 16. START BACKEND SERVER
