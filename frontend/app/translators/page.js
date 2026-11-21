@@ -1,8 +1,8 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 
 const API = "http://127.0.0.1:5000";
 
@@ -18,24 +18,33 @@ const languages = [
   "Korean",
   "Arabic",
   "Spanish",
-  "Russian"
+  "Russian",
 ];
 
 export default function TranslatorsPage() {
-  const [translators, setTranslators] = useState([]);
-  const [language, setLanguage] = useState("");
   const [travelDate, setTravelDate] = useState("");
+  const [language, setLanguage] = useState("");
   const [bookingId, setBookingId] = useState("");
 
-  const [loading, setLoading] = useState(true);
-  const [sendingId, setSendingId] = useState(null);
+  const [translators, setTranslators] = useState([]);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [showUnavailable, setShowUnavailable] =
+    useState(false);
+
+  const [sendingId, setSendingId] = useState(null);
   const [requestMessage, setRequestMessage] = useState("");
-  const [requestSuccess, setRequestSuccess] = useState(false);
+  const [requestSuccess, setRequestSuccess] =
+    useState(false);
 
 
+  const [autoFallbackEnabled, setAutoFallbackEnabled] =
+  useState(false);
 
-  // Automatically fill booking ID and travel date
+
+  
+
+  // Read booking details from URL
   useEffect(() => {
     const params = new URLSearchParams(
       window.location.search
@@ -53,39 +62,40 @@ export default function TranslatorsPage() {
     }
   }, []);
 
-
-
-
-
   // Load translators
   useEffect(() => {
+    if (!travelDate) {
+      setTranslators([]);
+      setError("");
+      setLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
 
     async function loadTranslators() {
       setLoading(true);
       setError("");
+      setTranslators([]);
 
       try {
         const params = new URLSearchParams();
+
+        params.set("travelDate", travelDate);
+        params.set("includeUnavailable", "true");
 
         if (language) {
           params.set("language", language);
         }
 
-        if (travelDate) {
-          params.set("travelDate", travelDate);
-        }
-
-        const query = params.toString();
-
-        const url = `${API}/api/translators${
-          query ? `?${query}` : ""
-        }`;
-
-        const response = await fetch(url, {
-          signal: controller.signal,
-          cache: "no-store"
-        });
+        const response = await fetch(
+          `${API}/api/translators?${params.toString()}`,
+          {
+            cache: "no-store",
+            credentials: "include",
+            signal: controller.signal,
+          }
+        );
 
         const data = await response.json();
 
@@ -99,11 +109,12 @@ export default function TranslatorsPage() {
           throw new Error("Invalid translator data");
         }
 
-        setTranslators(data);
+        if (!controller.signal.aborted) {
+          setTranslators(data);
+        }
       } catch (err) {
-        if (err.name !== "AbortError") {
+        if (!controller.signal.aborted) {
           setError(err.message);
-          setTranslators([]);
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -115,7 +126,23 @@ export default function TranslatorsPage() {
     loadTranslators();
 
     return () => controller.abort();
-  }, [language, travelDate]);
+  }, [travelDate, language]);
+
+  // Check translator availability
+  function isAvailable(translator) {
+    return (
+      translator.availableForDate === true ||
+      translator.availableForDate === 1
+    );
+  }
+
+  const availableTranslators = translators.filter(
+    isAvailable
+  );
+
+  const displayedTranslators = showUnavailable
+    ? translators
+    : availableTranslators;
 
   // Send translator request
   async function requestTranslator(translatorId) {
@@ -124,10 +151,7 @@ export default function TranslatorsPage() {
     setRequestMessage("");
     setRequestSuccess(false);
 
-    if (
-      !Number.isSafeInteger(id) ||
-      id < 1
-    ) {
+    if (!Number.isSafeInteger(id) || id < 1) {
       setRequestMessage(
         "Please enter a valid Booking ID"
       );
@@ -149,13 +173,14 @@ export default function TranslatorsPage() {
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
           },
           credentials: "include",
           body: JSON.stringify({
             bookingId: id,
-            translatorId
-          })
+            translatorId,
+            autoFallbackEnabled
+          }),
         }
       );
 
@@ -163,15 +188,15 @@ export default function TranslatorsPage() {
 
       if (!response.ok) {
         throw new Error(
-          data.message || "Request failed"
+          data.message || "Translator request failed"
         );
       }
 
       setRequestSuccess(true);
+
       setRequestMessage(
         `Translator request #${data.request.id} sent successfully! Status: Pending`
       );
-
     } catch (err) {
       setRequestMessage(err.message);
     } finally {
@@ -182,64 +207,102 @@ export default function TranslatorsPage() {
   const inputStyle = {
     padding: "10px",
     border: "1px solid #ccc",
-    borderRadius: "6px",
+    borderRadius: "5px",
     width: "100%",
-    marginTop: "6px",
-    boxSizing: "border-box"
+    marginTop: "8px",
+    boxSizing: "border-box",
   };
 
   return (
     <main
       style={{
-        padding: "30px 20px",
+        padding: "40px",
         fontFamily: "Arial",
-        maxWidth: "1100px",
-        margin: "auto"
       }}
     >
-      <Link href="/">← Back to Home</Link>
+      <Link href="/" className="back-btn">
+        ← Back to Home
+      </Link>
 
-      <h1>Available Translators</h1>
+      <h1>Our Translators</h1>
 
       <p>
-        Find and request a translator for your tour.
+        Select a travel date to check translator
+        availability.
       </p>
 
-      {/* Booking details */}
+      {/* Booking Details */}
       <div
         style={{
-          padding: "20px",
           backgroundColor: "#f3f4f6",
+          padding: "20px",
           borderRadius: "10px",
-          marginBottom: "25px"
+          marginBottom: "25px",
         }}
       >
-        <h2>Request a Translator</h2>
+        <h3>Request a Translator</h3>
 
         <p>
-          Enter your active Tour Booking ID and
-          select your travel date.
+          Enter your active Tour Booking ID to request
+          a translator.
         </p>
 
-        <label>Booking ID</label>
+        <label htmlFor="bookingId">
+          <strong>Booking ID:</strong>
+        </label>
 
         <input
+          id="bookingId"
           type="number"
           min="1"
+          placeholder="Example: 4008"
           value={bookingId}
           onChange={(e) => {
             setBookingId(e.target.value);
             setRequestMessage("");
           }}
-          placeholder="Example: 4008"
           style={{
             ...inputStyle,
-            maxWidth: "300px"
+            maxWidth: "300px",
           }}
         />
 
+        <label
+  style={{
+    display: "flex",
+    alignItems: "flex-start",
+    gap: "10px",
+    marginTop: "15px",
+    marginBottom: "15px"
+  }}
+>
+  <input
+    type="checkbox"
+    checked={autoFallbackEnabled}
+    onChange={(e) =>
+      setAutoFallbackEnabled(e.target.checked)
+    }
+  />
+
+  <span>
+    <strong>
+      Automatically find another translator
+    </strong>
+
+    <small style={{ display: "block", marginTop: "5px" }}>
+      If my selected translator rejects or does not
+      respond within 10 minutes, I agree to send a
+      request to another available translator.
+      The new translator must accept first.
+    </small>
+  </span>
+</label>
+
         <p style={{ fontSize: "13px" }}>
-          Use the Booking ID from your Booking Dashboard.
+          You can find your Booking ID in the{" "}
+          <Link href="/bookings">
+            Booking Dashboard
+          </Link>.
         </p>
 
         {requestMessage && (
@@ -247,9 +310,9 @@ export default function TranslatorsPage() {
             role="status"
             style={{
               color: requestSuccess
-                ? "#166534"
-                : "#dc2626",
-              fontWeight: "bold"
+                ? "green"
+                : "red",
+              fontWeight: "bold",
             }}
           >
             {requestMessage}
@@ -260,22 +323,46 @@ export default function TranslatorsPage() {
       {/* Filters */}
       <div
         style={{
-          display: "grid",
-          gridTemplateColumns:
-            "repeat(auto-fit, minmax(220px, 1fr))",
-          gap: "15px",
-          marginBottom: "30px"
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "20px",
+          marginBottom: "25px",
         }}
       >
         <div>
-          <label>Select Language</label>
+          <label htmlFor="travelDate">
+            <strong>Travel Date:</strong>
+          </label>
+
+          <input
+            id="travelDate"
+            type="date"
+            value={travelDate}
+            onChange={(e) =>
+              setTravelDate(e.target.value)
+            }
+            style={{
+              ...inputStyle,
+              minWidth: "200px",
+            }}
+          />
+        </div>
+
+        <div>
+          <label htmlFor="language">
+            <strong>Language:</strong>
+          </label>
 
           <select
-            style={inputStyle}
+            id="language"
             value={language}
             onChange={(e) =>
               setLanguage(e.target.value)
             }
+            style={{
+              ...inputStyle,
+              minWidth: "200px",
+            }}
           >
             <option value="">All Languages</option>
 
@@ -286,148 +373,133 @@ export default function TranslatorsPage() {
             ))}
           </select>
         </div>
-
-        <div>
-          <label>Travel Date</label>
-
-          <input
-            type="date"
-            style={inputStyle}
-            value={travelDate}
-            onChange={(e) =>
-              setTravelDate(e.target.value)
-            }
-          />
-        </div>
       </div>
 
-      {loading && (
-        <p>Loading translators...</p>
+      {!travelDate && (
+        <p>
+          Please select a travel date to view
+          available translators.
+        </p>
       )}
+
+      {loading && <p>Loading translators...</p>}
 
       {error && (
-        <p style={{ color: "red" }}>
-          {error}
-        </p>
+        <p style={{ color: "red" }}>{error}</p>
       )}
 
-      {!loading && !error && (
-        <p>
-          <strong>
-            {translators.length} translator(s) found
-          </strong>
-        </p>
-      )}
+      {travelDate && !loading && !error && (
+        <>
+          <h3>
+            Available Translators:{" "}
+            {availableTranslators.length}
+          </h3>
 
-      {/* Translator cards */}
-      {!loading && !error && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns:
-              "repeat(auto-fit, minmax(250px, 1fr))",
-            gap: "20px"
-          }}
-        >
-          {translators.map((translator) => (
-            <div
-              key={translator.id}
-              style={{
-                padding: "20px",
-                border: "1px solid #ddd",
-                borderRadius: "10px",
-                boxShadow:
-                  "0 2px 8px rgba(0,0,0,0.07)"
-              }}
-            >
-              <h2>{translator.name}</h2>
+          <label
+            style={{
+              display: "block",
+              marginBottom: "20px",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={showUnavailable}
+              onChange={(e) =>
+                setShowUnavailable(e.target.checked)
+              }
+            />{" "}
+            Show unavailable translators too
+          </label>
 
-              <p>
-                <strong>Languages:</strong>{" "}
-                {translator.languages}
-              </p>
+          {displayedTranslators.length === 0 ? (
+            <p>
+              No translators found for the selected
+              date and language.
+            </p>
+          ) : (
+            <div className="tour-grid">
+              {displayedTranslators.map(
+                (translator) => {
+                  const available =
+                    isAvailable(translator);
 
-              <p>
-                <strong>Daily Fee:</strong>{" "}
-                Rs.{" "}
-                {Number(
-                  translator.feePerDay
-                ).toLocaleString("en-LK")}
-              </p>
+                  return (
+                    <div
+                      key={translator.id}
+                      className="tour-card"
+                    >
+                      <h3>{translator.name}</h3>
 
-              <p>
-                <strong>Availability:</strong>{" "}
-                <span
-                  style={{
-                    color: translator.availableForDate
-                      ? "green"
-                      : "red",
-                    fontWeight: "bold"
-                  }}
-                >
-                  {translator.availableForDate
-                    ? "Available"
-                    : "Unavailable"}
-                </span>
-              </p>
+                      <p>
+                        <strong>Languages:</strong>{" "}
+                        {translator.languages}
+                      </p>
 
-              <p
-                style={{
-                  fontSize: "13px",
-                  color: "#666"
-                }}
-              >
-                {travelDate
-                  ? `Availability for ${travelDate}`
-                  : "General availability"}
-              </p>
+                      <p>
+                        <strong>Daily Fee:</strong>{" "}
+                        Rs.{" "}
+                        {Number(
+                          translator.feePerDay
+                        ).toLocaleString("en-LK")}
+                      </p>
 
-              {/* Request button */}
-              <button
-                type="button"
-                disabled={
-                  !translator.availableForDate ||
-                  sendingId !== null
+                      <p>
+                        <strong>Status:</strong>{" "}
+                        <strong
+                          style={{
+                            color: available
+                              ? "green"
+                              : "red",
+                          }}
+                        >
+                          {available
+                            ? "Available"
+                            : "Unavailable"}
+                        </strong>
+                      </p>
+
+                      <button
+                        type="button"
+                        disabled={
+                          !available ||
+                          sendingId !== null
+                        }
+                        onClick={() =>
+                          requestTranslator(
+                            translator.id
+                          )
+                        }
+                        style={{
+                          padding: "12px",
+                          width: "100%",
+                          marginTop: "10px",
+                          backgroundColor: available
+                            ? "#166534"
+                            : "#9ca3af",
+                          color: "white",
+                          border: "none",
+                          borderRadius: "6px",
+                          cursor:
+                            available &&
+                            sendingId === null
+                              ? "pointer"
+                              : "not-allowed",
+                        }}
+                      >
+                        {sendingId === translator.id
+                          ? "Sending Request..."
+                          : available
+                          ? "Request Translator"
+                          : "Unavailable"}
+                      </button>
+                    </div>
+                  );
                 }
-                onClick={() =>
-                  requestTranslator(translator.id)
-                }
-                style={{
-                  padding: "12px",
-                  width: "100%",
-                  marginTop: "10px",
-                  backgroundColor:
-                    translator.availableForDate
-                      ? "#166534"
-                      : "#9ca3af",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "6px",
-                  cursor:
-                    translator.availableForDate &&
-                    sendingId === null
-                      ? "pointer"
-                      : "not-allowed"
-                }}
-              >
-                {sendingId === translator.id
-                  ? "Sending Request..."
-                  : translator.availableForDate
-                  ? "Request Translator"
-                  : "Unavailable"}
-              </button>
+              )}
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
-
-      {!loading &&
-        !error &&
-        translators.length === 0 && (
-          <p>
-            No translators found for this language.
-          </p>
-        )}
     </main>
   );
 }

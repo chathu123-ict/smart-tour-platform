@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 
 const API = "http://127.0.0.1:5000";
@@ -9,9 +9,10 @@ const API = "http://127.0.0.1:5000";
 export default function TranslatorDashboard() {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [loadingId, setLoadingId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [nowMs, setNowMs] = useState(0);
 
   const loadRequests = useCallback(async () => {
     try {
@@ -31,7 +32,24 @@ export default function TranslatorDashboard() {
         );
       }
 
-      setRequests(data.requests || []);
+      const fetchedAt = Date.now();
+
+      const items = (data.requests || []).map((request) => {
+        const remaining = Number(request.remainingSeconds);
+
+        return {
+          ...request,
+          expiresAtClient:
+            request.status === "Pending" &&
+            request.remainingSeconds != null &&
+            Number.isFinite(remaining)
+              ? fetchedAt + Math.max(0, remaining) * 1000
+              : null
+        };
+      });
+
+      setRequests(items);
+      setNowMs(fetchedAt);
       setError("");
     } catch (err) {
       setError(err.message);
@@ -43,13 +61,20 @@ export default function TranslatorDashboard() {
   useEffect(() => {
     loadRequests();
 
-    const timer = setInterval(loadRequests, 30000);
+    const refresh = setInterval(loadRequests, 10000);
 
-    return () => clearInterval(timer);
+    const clock = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      clearInterval(refresh);
+      clearInterval(clock);
+    };
   }, [loadRequests]);
 
   async function updateStatus(id, status) {
-    setLoadingId(id);
+    setBusyId(id);
     setMessage("");
     setError("");
 
@@ -74,38 +99,42 @@ export default function TranslatorDashboard() {
         );
       }
 
-      setMessage(data.message);
+      setMessage(data.message || `Request ${status}`);
     } catch (err) {
       setError(err.message);
     } finally {
       await loadRequests();
-      setLoadingId(null);
+      setBusyId(null);
     }
   }
 
-  const cardStyle = {
-    border: "1px solid #ddd",
-    borderRadius: "10px",
-    padding: "20px",
-    marginBottom: "15px",
-    backgroundColor: "white"
-  };
+  function statusColor(status) {
+    if (status === "Accepted") return "green";
+    if (status === "Pending") return "#b45309";
+    return "red";
+  }
 
   return (
-    <main style={{
-      maxWidth: "900px",
-      margin: "30px auto",
-      padding: "20px",
-      fontFamily: "Arial"
-    }}>
+    <main
+      style={{
+        maxWidth: "900px",
+        margin: "30px auto",
+        padding: "20px",
+        fontFamily: "Arial"
+      }}
+    >
       <Link href="/">← Back to Home</Link>
 
       <h1>Translator Dashboard</h1>
-      <p>Manage your tour translation requests</p>
+
+      <p>
+        Manage translation requests and respond within
+        10 minutes.
+      </p>
 
       <button
         onClick={loadRequests}
-        style={{ padding: "10px 18px", marginBottom: "20px" }}
+        style={{ padding: "10px 15px" }}
       >
         Refresh Requests
       </button>
@@ -115,103 +144,162 @@ export default function TranslatorDashboard() {
       )}
 
       {error && (
-        <div>
-          <p style={{ color: "red" }}>{error}</p>
-          <Link href="/login">Go to Login</Link>
-        </div>
+        <p style={{ color: "red" }}>{error}</p>
       )}
 
       {loading && <p>Loading requests...</p>}
 
-      {!loading && !error && requests.length === 0 && (
+      {!loading && requests.length === 0 && (
         <p>No translator requests found.</p>
       )}
 
-      {!loading && !error && requests.map((request) => (
-        <div key={request.id} style={cardStyle}>
-          <h2>{request.tourName}</h2>
+      {requests.map((request) => {
+        const hasCountdown =
+          request.expiresAtClient != null;
 
-          <p><strong>Request ID:</strong> {request.id}</p>
+        const seconds = hasCountdown
+          ? Math.max(
+              0,
+              Math.ceil(
+                (request.expiresAtClient - nowMs) / 1000
+              )
+            )
+          : null;
 
-          <p>
-            <strong>Customer:</strong> {request.customerName}
-          </p>
+        const canRespond =
+          request.status === "Pending" &&
+          (!hasCountdown || seconds > 0);
 
-          <p>
-            <strong>Travel Date:</strong>{" "}
-            {String(request.travelDate).slice(0, 10)}
-          </p>
+        return (
+          <div
+            key={request.id}
+            style={{
+              border: "1px solid #ddd",
+              padding: "22px",
+              marginTop: "20px",
+              borderRadius: "10px"
+            }}
+          >
+            <h2>{request.tourName}</h2>
 
-          <p>
-            <strong>People:</strong> {request.people}
-          </p>
+            <p>Request ID: {request.id}</p>
+            <p>Booking ID: {request.bookingId}</p>
+            <p>Customer: {request.customerName}</p>
 
-          <p>
-            <strong>Languages:</strong> {request.languages}
-          </p>
+            <p>
+              Travel Date:{" "}
+              {String(request.travelDate).slice(0, 10)}
+            </p>
 
-          <p>
-            <strong>Daily Fee:</strong> Rs.{" "}
-            {Number(request.feePerDay).toLocaleString()}
-          </p>
+            <p>People: {request.people}</p>
+            <p>Languages: {request.languages}</p>
 
-          <p>
-            <strong>Status:</strong>{" "}
-            <span style={{
-              color:
-                request.status === "Accepted"
-                  ? "green"
-                  : request.status === "Pending"
-                  ? "#b45309"
-                  : "red"
-            }}>
-              {request.status}
-            </span>
-          </p>
+            <p>
+              Daily Fee: Rs.{" "}
+              {Number(request.feePerDay).toLocaleString("en-LK")}
+            </p>
 
-          {request.status === "Pending" && (
-            <div style={{
-              display: "flex",
-              gap: "10px",
-              marginTop: "15px"
-            }}>
-              <button
-                disabled={loadingId !== null}
-                onClick={() =>
-                  updateStatus(request.id, "Accepted")
-                }
+            <p>
+              Status:{" "}
+              <strong
                 style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#15803d",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px"
+                  color: statusColor(request.status)
                 }}
               >
-                {loadingId === request.id
-                  ? "Processing..."
-                  : "Accept"}
-              </button>
+                {request.status}
+              </strong>
+            </p>
 
-              <button
-                disabled={loadingId !== null}
-                onClick={() =>
-                  updateStatus(request.id, "Rejected")
-                }
+            {request.status === "Pending" && (
+              <div
                 style={{
-                  padding: "10px 20px",
-                  backgroundColor: "#dc2626",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "5px"
+                  padding: "15px",
+                  backgroundColor: "#fef3c7",
+                  borderRadius: "8px",
+                  marginBottom: "15px"
                 }}
               >
-                Reject
-              </button>
-            </div>
-          )}
-        </div>
-      ))}
+                <p style={{ marginTop: 0 }}>
+                  Time Remaining to Respond
+                </p>
+
+                <h2
+                  style={{
+                    color:
+                      seconds !== null && seconds <= 60
+                        ? "red"
+                        : "#92400e",
+                    marginBottom: "5px"
+                  }}
+                >
+                  {seconds === null
+                    ? "Loading timer..."
+                    : `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`}
+                </h2>
+
+                <small>
+                  {seconds === 0
+                    ? "Time limit reached. Updating status..."
+                    : "Accept or reject before the timer expires."}
+                </small>
+              </div>
+            )}
+
+            {canRespond && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: "10px"
+                }}
+              >
+                <button
+                  disabled={busyId !== null}
+                  onClick={() =>
+                    updateStatus(request.id, "Accepted")
+                  }
+                  style={{
+                    padding: "10px 20px",
+                    backgroundColor: "green",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "5px"
+                  }}
+                >
+                  Accept
+                </button>
+
+                <button
+                  disabled={busyId !== null}
+                  onClick={() =>
+                    updateStatus(request.id, "Rejected")
+                  }
+                  style={{
+                    padding: "10px 20px",
+                    backgroundColor: "red",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "5px"
+                  }}
+                >
+                  Reject
+                </button>
+              </div>
+            )}
+
+            {request.status === "Accepted" && (
+              <p style={{ color: "green" }}>
+                You have accepted this translation request.
+              </p>
+            )}
+
+            {request.status === "Expired" && (
+              <p style={{ color: "red" }}>
+                This request expired after 10 minutes.
+              </p>
+            )}
+          </div>
+        );
+      })}
     </main>
   );
 }

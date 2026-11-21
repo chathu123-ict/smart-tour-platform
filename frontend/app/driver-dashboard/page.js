@@ -246,6 +246,22 @@ function DriverDashboard() {
       </div>
 
       <h1>Driver Dashboard</h1>
+      <Link
+  href="/driver-profile"
+  style={{
+    display: "inline-block",
+    padding: "10px 18px",
+    backgroundColor: "#166534",
+    color: "white",
+    borderRadius: "6px",
+    textDecoration: "none",
+    marginBottom: "20px"
+  }}
+>
+  My Profile
+</Link>
+
+      
 
       <p>
         Manage your driver profile and tour requests.

@@ -1310,7 +1310,17 @@ app.post(
   "/api/translator-requests",
   requireRole("customer"),
   (req, res) => {
-    const { bookingId, translatorId } = req.body || {};
+    const {
+  bookingId,
+  translatorId,
+  autoFallbackEnabled = false
+} = req.body || {};
+
+if (typeof autoFallbackEnabled !== "boolean") {
+  return res.status(400).json({
+    message: "Invalid automatic fallback choice"
+  });
+}
 
     const bookingIdNumber = Number(bookingId);
     const translatorIdNumber = Number(translatorId);
@@ -1333,6 +1343,7 @@ app.post(
       DECLARE @bookingId INT = ?;
       DECLARE @translatorId INT = ?;
       DECLARE @email NVARCHAR(150) = ?;
+      DECLARE @autoFallback BIT = ?;
 
       DECLARE @resultCode INT = 201;
       DECLARE @message NVARCHAR(200) = N'';
@@ -1435,9 +1446,9 @@ app.post(
 
             -- Create translator request
             INSERT INTO TranslatorRequests
-              (bookingId, translatorId, status)
-            VALUES
-              (@bookingId, @translatorId, 'Pending');
+  (bookingId, translatorId, status, autoFallbackEnabled)
+VALUES
+  (@bookingId, @translatorId, 'Pending', @autoFallback);
 
             SET @requestId =
               CONVERT(INT, SCOPE_IDENTITY());
@@ -1475,7 +1486,8 @@ app.post(
       [
         bookingIdNumber,
         translatorIdNumber,
-        req.session.user.email.trim().toLowerCase()
+        req.session.user.email.trim().toLowerCase(),
+        autoFallbackEnabled ? 1 : 0
       ],
       (error, rows) => {
         if (error) {
@@ -2448,6 +2460,170 @@ app.get("/api/driver-profile", (req, res) => {
 
 
 
+ // UPDATE DRIVER PROFILE
+app.patch("/api/driver-profile", requireRole("driver"), (req, res) => {
+  const user = req.session.user;
+  const driverId = Number(user.driverId);
+  const userId = Number(user.id);
+
+  if (
+    !Number.isSafeInteger(driverId) ||
+    driverId < 1 ||
+    !Number.isSafeInteger(userId) ||
+    userId < 1
+  ) {
+    return res.status(404).json({
+      message: "Driver profile not linked"
+    });
+  }
+
+  const { name, vehicle, location, available } = req.body || {};
+
+  if (
+    typeof name !== "string" ||
+    typeof vehicle !== "string" ||
+    typeof location !== "string" ||
+    typeof available !== "boolean"
+  ) {
+    return res.status(400).json({
+      message: "Invalid profile details"
+    });
+  }
+
+  const cleanName = name.trim();
+  const cleanVehicle = vehicle.trim();
+  const cleanLocation = location.trim();
+
+  if (
+    !cleanName ||
+    !cleanVehicle ||
+    !cleanLocation ||
+    cleanName.length > 100 ||
+    cleanVehicle.length > 100 ||
+    cleanLocation.length > 100
+  ) {
+    return res.status(400).json({
+      message: "Please enter valid profile details (maximum 100 characters each)"
+    });
+  }
+
+  const query = `
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @driverId INT = ?;
+    DECLARE @userId INT = ?;
+    DECLARE @name NVARCHAR(100) = ?;
+    DECLARE @vehicle NVARCHAR(100) = ?;
+    DECLARE @location NVARCHAR(100) = ?;
+    DECLARE @available BIT = ?;
+
+    BEGIN TRY
+      BEGIN TRANSACTION;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM Drivers WITH (UPDLOCK, HOLDLOCK)
+        WHERE id = @driverId
+      )
+      BEGIN
+        THROW 50001, 'Driver profile not found', 1;
+      END;
+
+      UPDATE Drivers
+      SET
+        name = @name,
+        vehicle = @vehicle,
+        location = @location,
+        available = @available
+      WHERE id = @driverId;
+
+      -- Keep the login account name synchronized
+      UPDATE Users
+      SET name = @name
+      WHERE id = @userId
+        AND driverId = @driverId;
+
+      IF @@ROWCOUNT <> 1
+      BEGIN
+        THROW 50002, 'Linked user account not found', 1;
+      END;
+
+      COMMIT TRANSACTION;
+
+      SELECT
+        id,
+        name,
+        vehicle,
+        location,
+        available
+      FROM Drivers
+      WHERE id = @driverId;
+
+    END TRY
+    BEGIN CATCH
+      IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+      THROW;
+    END CATCH;
+  `;
+
+  sql.query(
+    connectionString,
+    query,
+    [
+      driverId,
+      userId,
+      cleanName,
+      cleanVehicle,
+      cleanLocation,
+      available ? 1 : 0
+    ],
+    (error, rows) => {
+      if (error) {
+        console.error("Update Driver Profile Error:", error);
+
+        return res.status(500).json({
+          message: "Failed to update driver profile"
+        });
+      }
+
+      const driver = rows?.[0];
+
+      if (!driver) {
+        return res.status(500).json({
+          message: "Updated profile could not be loaded"
+        });
+      }
+
+      // Update the current login session
+      req.session.user.name = driver.name;
+
+      req.session.save((saveError) => {
+        if (saveError) {
+          console.error("Session Save Error:", saveError);
+
+          return res.status(500).json({
+            message: "Profile saved, but session refresh failed. Please log in again."
+          });
+        }
+
+        return res.json({
+          message: "Driver profile updated successfully",
+          driver: {
+            ...driver,
+            available: Boolean(driver.available)
+          }
+        });
+      });
+    }
+  );
+});
+
+
+
+
 
 // 15. CANCEL CUSTOMER BOOKING
 
@@ -2588,49 +2764,182 @@ setInterval(() => {
 
 
 
- //18. AUTOMATIC TRANSLATOR REQUEST EXPIRY
+ 
+ // 18. AUTOMATIC TRANSLATOR EXPIRY + FALLBACK
 
-const translatorExpiryTimer = setInterval(() => {
+let translatorFallbackJobRunning = false;
+
+async function processTranslatorFallbacks() {
+  if (translatorFallbackJobRunning) return;
+
+  translatorFallbackJobRunning = true;
+
   const query = `
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-    -- Cancel requests for cancelled bookings
-    UPDATE tr
-    SET
-      tr.status = 'Cancelled',
-      tr.respondedAt = SYSDATETIME()
-    FROM TranslatorRequests tr
-    INNER JOIN Bookings b
-      ON tr.bookingId = b.id
-    WHERE b.status = 'Cancelled'
-      AND tr.status IN ('Pending', 'Accepted');
+    BEGIN TRY
+      BEGIN TRANSACTION;
 
-    -- Expire pending translator requests
-    UPDATE TranslatorRequests
-    SET
-      status = 'Expired',
-      respondedAt = SYSDATETIME()
-    WHERE status = 'Pending'
-      AND createdAt <= DATEADD(
-        MINUTE, -10, SYSDATETIME()
-      );
+      DECLARE @lockResult INT;
+
+      EXEC @lockResult = sys.sp_getapplock
+        @Resource = 'TranslatorFallbackJob',
+        @LockMode = 'Exclusive',
+        @LockOwner = 'Transaction',
+        @LockTimeout = 10000;
+
+      IF @lockResult < 0
+        THROW 50001, 'Fallback job lock unavailable', 1;
+
+      -- Cancel requests belonging to cancelled bookings
+      UPDATE tr
+      SET
+        tr.status = 'Cancelled',
+        tr.respondedAt = SYSDATETIME()
+      FROM TranslatorRequests tr
+      INNER JOIN Bookings b
+        ON b.id = tr.bookingId
+      WHERE b.status = 'Cancelled'
+        AND tr.status IN ('Pending', 'Accepted');
+
+      -- Expire requests older than 10 minutes
+      UPDATE TranslatorRequests
+      SET
+        status = 'Expired',
+        respondedAt = SYSDATETIME()
+      WHERE status = 'Pending'
+        AND createdAt <= DATEADD(
+          MINUTE, -10, SYSDATETIME()
+        );
+
+      -- Find the latest request for each booking
+      ;WITH LatestRequests AS (
+        SELECT
+          tr.id,
+          tr.bookingId,
+          tr.status,
+          tr.autoFallbackEnabled,
+          ROW_NUMBER() OVER (
+            PARTITION BY tr.bookingId
+            ORDER BY tr.createdAt DESC, tr.id DESC
+          ) AS rn
+        FROM TranslatorRequests tr
+      ),
+
+      EligibleBookings AS (
+        SELECT
+          latest.bookingId,
+          b.travelDate
+        FROM LatestRequests latest
+        INNER JOIN Bookings b WITH (UPDLOCK, HOLDLOCK)
+          ON b.id = latest.bookingId
+        WHERE latest.rn = 1
+          AND latest.status IN ('Rejected', 'Expired')
+          AND latest.autoFallbackEnabled = 1
+          AND b.status IN ('Pending', 'Confirmed')
+
+          -- Do not create a request if one is active
+          AND NOT EXISTS (
+            SELECT 1
+            FROM TranslatorRequests existing
+            WHERE existing.bookingId = latest.bookingId
+              AND existing.status IN ('Pending', 'Accepted')
+          )
+      ),
+
+      NextTranslators AS (
+        SELECT
+          eligible.bookingId,
+          nextTranslator.id AS translatorId
+        FROM EligibleBookings eligible
+
+        CROSS APPLY (
+          SELECT TOP (1)
+            t.id
+          FROM Translators t WITH (UPDLOCK, HOLDLOCK)
+          WHERE t.available = 1
+
+            -- Do not request the same translator again
+            AND NOT EXISTS (
+              SELECT 1
+              FROM TranslatorRequests previous
+              WHERE previous.bookingId = eligible.bookingId
+                AND previous.translatorId = t.id
+            )
+
+            -- Avoid translators already requested
+            -- or accepted for the same date
+            AND NOT EXISTS (
+              SELECT 1
+              FROM TranslatorRequests busy
+              INNER JOIN Bookings busyBooking
+                ON busyBooking.id = busy.bookingId
+              WHERE busy.translatorId = t.id
+                AND busy.status IN ('Pending', 'Accepted')
+                AND busyBooking.status <> 'Cancelled'
+                AND busyBooking.travelDate = eligible.travelDate
+            )
+
+          ORDER BY t.id
+        ) nextTranslator
+      )
+
+      -- Create a new request with a fresh 10-minute timer
+      INSERT INTO TranslatorRequests (
+        bookingId,
+        translatorId,
+        status,
+        autoFallbackEnabled
+      )
+      SELECT
+        bookingId,
+        translatorId,
+        'Pending',
+        1
+      FROM NextTranslators;
+
+      COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+      IF @@TRANCOUNT > 0
+        ROLLBACK TRANSACTION;
+
+      THROW;
+    END CATCH;
   `;
 
-  sql.query(
-    connectionString,
-    query,
-    [],
-    (error) => {
-      if (error) {
-        console.error(
-          "Translator Expiry Error:",
-          error
-        );
-      }
-    }
-  );
-}, 15000);
+  try {
+    await new Promise((resolve, reject) => {
+      sql.query(
+        connectionString,
+        query,
+        [],
+        (error) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        }
+      );
+    });
+  } catch (error) {
+    console.error("Translator Fallback Error:", error);
+  } finally {
+    translatorFallbackJobRunning = false;
+  }
+}
 
-translatorExpiryTimer.unref?.();
+// Run once when the backend starts
+processTranslatorFallbacks();
+
+// Check every 15 seconds
+const translatorFallbackTimer = setInterval(
+  processTranslatorFallbacks,
+  15000
+);
+
+translatorFallbackTimer.unref?.();
 
 

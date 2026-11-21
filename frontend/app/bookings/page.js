@@ -23,6 +23,12 @@ function BookingsPage() {
   const [driversByDate, setDriversByDate] = useState({});
   const [requests, setRequests] = useState([]);
 
+  // Translator requests
+  const [translatorRequests, setTranslatorRequests] = useState([]);
+  const [translatorError, setTranslatorError] = useState("");
+  const [translatorLoaded, setTranslatorLoaded] = useState(false);
+  const [nowMs, setNowMs] = useState(0);
+
   const [selectedDrivers, setSelectedDrivers] = useState({});
   const [autoFallbackChoices, setAutoFallbackChoices] = useState({});
 
@@ -187,7 +193,84 @@ function BookingsPage() {
     };
   }, []);
 
-  // Scroll to new booking
+  // Translator status and live countdown
+  useEffect(() => {
+    let active = true;
+
+    async function refreshTranslatorRequests() {
+      try {
+        const response = await fetch(
+          `${API_URL}/api/customer/translator-requests`,
+          {
+            credentials: "include",
+            cache: "no-store"
+          }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(
+            data.message || "Failed to load translator requests"
+          );
+        }
+
+        if (!Array.isArray(data.requests)) {
+          throw new Error("Invalid translator requests response");
+        }
+
+        if (!active) return;
+
+        const fetchedAt = Date.now();
+
+        const updatedRequests = data.requests.map((request) => {
+          const remaining = Number(request.remainingSeconds);
+
+          return {
+            ...request,
+            expiresAtClient:
+              request.status === "Pending" &&
+              request.remainingSeconds != null &&
+              Number.isFinite(remaining)
+                ? fetchedAt + Math.max(0, remaining) * 1000
+                : null
+          };
+        });
+
+        setTranslatorRequests(updatedRequests);
+        setTranslatorError("");
+        setTranslatorLoaded(true);
+        setNowMs(fetchedAt);
+
+      } catch (error) {
+        if (active) {
+          setTranslatorError(error.message);
+          setTranslatorLoaded(true);
+        }
+      }
+    }
+
+    refreshTranslatorRequests();
+
+    // Check translator status every 10 seconds
+    const refreshTimer = setInterval(
+      refreshTranslatorRequests,
+      10000
+    );
+
+    // Update countdown every second
+    const clockTimer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(refreshTimer);
+      clearInterval(clockTimer);
+    };
+  }, []);
+
+  // Scroll to newly created booking
   useEffect(() => {
     if (!newBookingId || !dataLoaded) return;
 
@@ -433,9 +516,49 @@ function BookingsPage() {
         <p>No bookings found.</p>
       )}
 
+      {/* Translator API errors */}
+      {translatorError && (
+        <p role="alert" style={{ color: "#b91c1c" }}>
+          Translator status could not be refreshed: {translatorError}
+        </p>
+      )}
+
       {/* Booking Cards */}
       <div className="tour-grid">
         {bookings.map((booking) => {
+
+          // Find translator requests for this booking
+          const bookingTranslatorRequests = translatorRequests
+            .filter(
+              (request) =>
+                Number(request.bookingId) === Number(booking.id)
+            )
+            .sort(
+              (a, b) => Number(b.id) - Number(a.id)
+            );
+
+          // Prefer accepted, then pending, then latest
+          const translatorRequest =
+            bookingTranslatorRequests.find(
+              (request) => request.status === "Accepted"
+            ) ||
+            bookingTranslatorRequests.find(
+              (request) => request.status === "Pending"
+            ) ||
+            bookingTranslatorRequests[0];
+
+          // Countdown for pending translator request
+          const translatorSecondsLeft =
+            translatorRequest?.status === "Pending" &&
+            translatorRequest.expiresAtClient != null
+              ? Math.max(
+                  0,
+                  Math.ceil(
+                    (translatorRequest.expiresAtClient - nowMs) / 1000
+                  )
+                )
+              : null;
+
           const isNewBooking =
             String(booking.id) === String(newBookingId);
 
@@ -448,8 +571,7 @@ function BookingsPage() {
 
           const currentRequest = requests.find(
             (request) =>
-              Number(request.bookingId) ===
-                Number(booking.id) &&
+              Number(request.bookingId) === Number(booking.id) &&
               (
                 request.status === "Accepted" ||
                 request.status === "Pending"
@@ -468,17 +590,12 @@ function BookingsPage() {
             ? requests
                 .filter(
                   (request) =>
-                    Number(request.bookingId) ===
-                      Number(booking.id) &&
-                    Number(request.id) <
-                      Number(currentRequest.id) &&
-                    ["Rejected", "Expired"].includes(
-                      request.status
-                    )
+                    Number(request.bookingId) === Number(booking.id) &&
+                    Number(request.id) < Number(currentRequest.id) &&
+                    ["Rejected", "Expired"].includes(request.status)
                 )
                 .sort(
-                  (a, b) =>
-                    Number(b.id) - Number(a.id)
+                  (a, b) => Number(b.id) - Number(a.id)
                 )[0]
             : null;
 
@@ -550,7 +667,7 @@ function BookingsPage() {
 
               <hr />
 
-              {/* Cancelled Booking */}
+              {/* Driver Information */}
               {isCancelled ? (
                 <div>
                   <h3 style={{ color: "red" }}>
@@ -728,7 +845,6 @@ function BookingsPage() {
                 <div>
                   <h3>Request a Driver</h3>
 
-                  {/* Driver Selection */}
                   <select
                     value={selectedDrivers[booking.id] || ""}
                     onChange={(event) =>
@@ -807,7 +923,6 @@ function BookingsPage() {
                     </span>
                   </label>
 
-                  {/* Request Driver Button */}
                   <button
                     className="details-btn"
                     disabled={
@@ -825,29 +940,142 @@ function BookingsPage() {
                 </div>
               )}
 
-              {/* NEW: Find Translator Button */}
+              {/* Translator Details */}
+              <section
+                style={{
+                  marginTop: "20px",
+                  padding: "16px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "8px",
+                  backgroundColor: "#f9fafb"
+                }}
+              >
+                <h3 style={{ marginTop: 0 }}>
+                  Translator Details (Optional)
+                </h3>
+
+                {!translatorLoaded ? (
+                  <p>Loading translator status...</p>
+
+                ) : translatorRequest ? (
+                  <>
+                    <p>
+                      Translator:{" "}
+                      <strong>
+                        {translatorRequest.translatorName}
+                      </strong>
+                    </p>
+
+                    <p>
+                      Languages: {translatorRequest.languages}
+                    </p>
+
+                    <p>
+                      Daily Fee: Rs.{" "}
+                      {Number(
+                        translatorRequest.feePerDay
+                      ).toLocaleString("en-LK")}
+                    </p>
+
+                    <p>
+                      Request Status:{" "}
+                      <strong
+                        style={{
+                          color:
+                            translatorRequest.status === "Accepted"
+                              ? "#15803d"
+                              : translatorRequest.status === "Pending"
+                              ? "#b45309"
+                              : "#b91c1c"
+                        }}
+                      >
+                        {translatorRequest.status}
+                      </strong>
+                    </p>
+
+                    {isCancelled ? (
+                      <p style={{ color: "#b91c1c" }}>
+                        This booking is cancelled.
+                        Previous translator requests are shown
+                        for reference only.
+                      </p>
+
+                    ) : translatorRequest.status === "Pending" ? (
+                      <p style={{ color: "#92400e" }}>
+                        {translatorSecondsLeft === null
+                          ? "Waiting for translator response (10-minute limit)."
+                          : translatorSecondsLeft > 0
+                          ? `Time remaining: ${Math.floor(translatorSecondsLeft / 60)}m ${String(translatorSecondsLeft % 60).padStart(2, "0")}s`
+                          : "Time limit reached. Waiting for server to update status..."}
+                      </p>
+
+                    ) : translatorRequest.status === "Accepted" ? (
+                      <p style={{ color: "#15803d" }}>
+                        Translator accepted your request.
+                      </p>
+
+                    ) : (
+                      <p>
+                        You may request another available
+                        translator if your booking is active.
+                      </p>
+                    )}
+
+                    {bookingTranslatorRequests.length > 1 && (
+                      <details style={{ marginTop: "12px" }}>
+                        <summary>
+                          Previous translator requests
+                        </summary>
+
+                        <ul>
+                          {bookingTranslatorRequests
+                            .filter(
+                              (request) =>
+                                request.id !== translatorRequest.id
+                            )
+                            .map((request) => (
+                              <li key={request.id}>
+                                {request.translatorName}:{" "}
+                                {request.status}
+                              </li>
+                            ))}
+                        </ul>
+                      </details>
+                    )}
+                  </>
+
+                ) : (
+                  <p>
+                    No translator requested for this booking.
+                  </p>
+                )}
+              </section>
+
+              {/* Find Translator Button */}
               {canCancel && (
                 <div style={{ marginTop: "20px" }}>
                   <Link
-  href={{
-    pathname: "/translators",
-    query: {
-      bookingId: booking.id,
-      travelDate: String(booking.travelDate).slice(0, 10)
-    }
-  }}
-  style={{
-    display: "inline-block",
-    padding: "10px 18px",
-    backgroundColor: "#2563eb",
-    color: "white",
-    textDecoration: "none",
-    borderRadius: "6px",
-    fontWeight: "bold"
-  }}
->
-  Find a Translator (Optional)
-</Link>
+                    href={{
+                      pathname: "/translators",
+                      query: {
+                        bookingId: booking.id,
+                        travelDate: String(
+                          booking.travelDate
+                        ).slice(0, 10)
+                      }
+                    }}
+                    style={{
+                      display: "inline-block",
+                      padding: "10px 18px",
+                      backgroundColor: "#2563eb",
+                      color: "white",
+                      textDecoration: "none",
+                      borderRadius: "6px",
+                      fontWeight: "bold"
+                    }}
+                  >
+                    Find a Translator (Optional)
+                  </Link>
 
                   <p
                     style={{
@@ -856,8 +1084,8 @@ function BookingsPage() {
                       marginTop: "8px"
                     }}
                   >
-                    Use Booking ID {booking.id} and
-                    travel date{" "}
+                    Use Booking ID {booking.id} and travel
+                    date{" "}
                     {String(booking.travelDate).slice(0, 10)}
                     {" "}on the translator page.
                   </p>
