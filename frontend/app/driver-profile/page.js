@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import AuthGuard from "../components/AuthGuard";
+import RatingDisplay from "../components/RatingDisplay";
 
 const API = "http://127.0.0.1:5000";
 
@@ -15,9 +16,12 @@ function DriverProfilePage() {
     available: true
   });
 
+  const [driverId, setDriverId] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
+
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -42,13 +46,45 @@ function DriverProfilePage() {
           );
         }
 
-        if (active) {
-          setProfile({
-            name: data.name || "",
-            vehicle: data.vehicle || "",
-            location: data.location || "",
-            available: Boolean(data.available)
-          });
+        if (!active) return;
+
+        setProfile({
+          name: data.name || "",
+          vehicle: data.vehicle || "",
+          location: data.location || "",
+          available: Boolean(data.available)
+        });
+
+        // Get the real Driver table ID
+        const profileDriverId =
+          data.driverId ?? data.id;
+
+        if (profileDriverId) {
+          setDriverId(profileDriverId);
+        } else {
+          // Fallback: get driverId from login session
+          try {
+            const meResponse = await fetch(
+              `${API}/api/me`,
+              {
+                credentials: "include",
+                cache: "no-store"
+              }
+            );
+
+            const meData = await meResponse.json();
+
+            if (meResponse.ok && active) {
+              const user = meData.user ?? meData;
+
+              setDriverId(user.driverId ?? null);
+            }
+          } catch (sessionError) {
+            console.error(
+              "Failed to load driver ID:",
+              sessionError
+            );
+          }
         }
       } catch (err) {
         if (active) {
@@ -111,6 +147,13 @@ function DriverProfilePage() {
         location: data.driver.location,
         available: Boolean(data.driver.available)
       });
+
+      // Keep the correct driver ID
+      if (data.driver.driverId ?? data.driver.id) {
+        setDriverId(
+          data.driver.driverId ?? data.driver.id
+        );
+      }
 
       setMessage("Profile updated successfully!");
       setEditing(false);
@@ -329,7 +372,8 @@ function DriverProfilePage() {
                     setEditing(false);
                     setMessage("");
                     setError("");
-                    // Reload the saved profile
+
+                    // Reload saved profile
                     window.location.reload();
                   }}
                   style={{
@@ -343,6 +387,32 @@ function DriverProfilePage() {
               </div>
             )}
           </form>
+
+          {/* DRIVER RATINGS AND REVIEWS */}
+          <div
+            style={{
+              marginTop: "30px",
+              padding: "20px",
+              backgroundColor: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "10px"
+            }}
+          >
+            <h3 style={{ color: "#166534" }}>
+              My Ratings & Customer Reviews
+            </h3>
+
+            {driverId ? (
+              <RatingDisplay
+                type="driver"
+                personId={driverId}
+              />
+            ) : (
+              <p style={{ color: "#6b7280" }}>
+                Driver rating information is unavailable.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </main>

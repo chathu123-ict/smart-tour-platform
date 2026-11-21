@@ -4,9 +4,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import AuthGuard from "../components/AuthGuard";
+import RatingDisplay from "../components/RatingDisplay";
 
 const API = "http://127.0.0.1:5000";
-
 
 const LANGUAGE_OPTIONS = [
   "English",
@@ -33,11 +33,11 @@ const emptyProfile = {
 function TranslatorProfilePage() {
   const [profile, setProfile] = useState(emptyProfile);
   const [savedProfile, setSavedProfile] = useState(emptyProfile);
+  const [translatorId, setTranslatorId] = useState(null);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [editing, setEditing] = useState(false);
-
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
@@ -69,9 +69,39 @@ function TranslatorProfilePage() {
           available: Boolean(data.available)
         };
 
-        if (active) {
-          setProfile(loadedProfile);
-          setSavedProfile(loadedProfile);
+        if (!active) return;
+
+        setProfile(loadedProfile);
+        setSavedProfile(loadedProfile);
+
+        const profileTranslatorId =
+          data.translatorId ?? data.id;
+
+        if (profileTranslatorId != null) {
+          setTranslatorId(profileTranslatorId);
+        } else {
+          // Fallback: get translator ID from login session
+          try {
+            const meResponse = await fetch(
+              `${API}/api/me`,
+              {
+                credentials: "include",
+                cache: "no-store"
+              }
+            );
+
+            const meData = await meResponse.json();
+
+            if (meResponse.ok && active) {
+              const user = meData.user ?? meData;
+              setTranslatorId(user.translatorId ?? null);
+            }
+          } catch (sessionError) {
+            console.error(
+              "Failed to load translator ID:",
+              sessionError
+            );
+          }
         }
       } catch (err) {
         if (active) {
@@ -100,27 +130,25 @@ function TranslatorProfilePage() {
     }));
   }
 
+  function toggleLanguage(language) {
+    setProfile((previous) => {
+      const selected = previous.languages
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
 
-function toggleLanguage(language) {
-  setProfile((previous) => {
-    const selected = previous.languages
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
+      const updated = selected.includes(language)
+        ? selected.filter((item) => item !== language)
+        : [...selected, language];
 
-    const updated = selected.includes(language)
-      ? selected.filter((item) => item !== language)
-      : [...selected, language];
-
-    return {
-      ...previous,
-      languages: LANGUAGE_OPTIONS
-        .filter((item) => updated.includes(item))
-        .join(", ")
-    };
-  });
-}
-
+      return {
+        ...previous,
+        languages: LANGUAGE_OPTIONS
+          .filter((item) => updated.includes(item))
+          .join(", ")
+      };
+    });
+  }
 
   function cancelEdit() {
     setProfile({ ...savedProfile });
@@ -132,18 +160,15 @@ function toggleLanguage(language) {
   async function saveProfile(event) {
     event.preventDefault();
 
+    const selectedLanguages = profile.languages
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
 
-
-const selectedLanguages = profile.languages
-  .split(",")
-  .map((item) => item.trim())
-  .filter(Boolean);
-
-if (selectedLanguages.length === 0) {
-  setError("Please select at least one language");
-  return;
-}
-
+    if (selectedLanguages.length === 0) {
+      setError("Please select at least one language");
+      return;
+    }
 
     setSaving(true);
     setError("");
@@ -184,6 +209,14 @@ if (selectedLanguages.length === 0) {
 
       setProfile(updatedProfile);
       setSavedProfile(updatedProfile);
+
+      const updatedTranslatorId =
+        data.translator.translatorId ??
+        data.translator.id;
+
+      if (updatedTranslatorId != null) {
+        setTranslatorId(updatedTranslatorId);
+      }
 
       setEditing(false);
       setMessage("Profile updated successfully!");
@@ -256,9 +289,7 @@ if (selectedLanguages.length === 0) {
             Current Status:{" "}
             <strong
               style={{
-                color: profile.available
-                  ? "green"
-                  : "red"
+                color: profile.available ? "green" : "red"
               }}
             >
               {profile.available
@@ -268,7 +299,6 @@ if (selectedLanguages.length === 0) {
           </p>
 
           <form onSubmit={saveProfile}>
-            {/* Translator Name */}
             <label htmlFor="translatorName">
               <strong>Translator Name</strong>
             </label>
@@ -285,78 +315,78 @@ if (selectedLanguages.length === 0) {
               style={inputStyle}
             />
 
-            
-{/* Languages */}
-<div style={{ marginBottom: "20px" }}>
-  <label>
-    <strong>Languages</strong>
-  </label>
+            {/* Languages */}
+            <div style={{ marginBottom: "20px" }}>
+              <label>
+                <strong>Languages</strong>
+              </label>
 
-  <details
-    style={{
-      marginTop: "8px",
-      border: "1px solid #ccc",
-      borderRadius: "6px",
-      padding: "12px",
-      backgroundColor: "white"
-    }}
-  >
-    <summary
-      style={{
-        cursor: editing ? "pointer" : "default",
-        fontWeight: "500"
-      }}
-    >
-      {profile.languages || "Select Languages"}
-    </summary>
+              <details
+                style={{
+                  marginTop: "8px",
+                  border: "1px solid #ccc",
+                  borderRadius: "6px",
+                  padding: "12px",
+                  backgroundColor: "white"
+                }}
+              >
+                <summary
+                  style={{
+                    cursor: editing ? "pointer" : "default",
+                    fontWeight: "500"
+                  }}
+                >
+                  {profile.languages || "Select Languages"}
+                </summary>
 
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(2, 1fr)",
-        gap: "12px",
-        marginTop: "15px"
-      }}
-    >
-      {LANGUAGE_OPTIONS.map((language) => {
-        const selected = profile.languages
-          .split(",")
-          .map((item) => item.trim())
-          .includes(language);
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(2, 1fr)",
+                    gap: "12px",
+                    marginTop: "15px"
+                  }}
+                >
+                  {LANGUAGE_OPTIONS.map((language) => {
+                    const selected = profile.languages
+                      .split(",")
+                      .map((item) => item.trim())
+                      .includes(language);
 
-        return (
-          <label
-            key={language}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "8px"
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={selected}
-              disabled={!editing || saving}
-              onChange={() => toggleLanguage(language)}
-            />
+                    return (
+                      <label
+                        key={language}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px"
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          disabled={!editing || saving}
+                          onChange={() =>
+                            toggleLanguage(language)
+                          }
+                        />
 
-            {language}
-          </label>
-        );
-      })}
-    </div>
-  </details>
+                        {language}
+                      </label>
+                    );
+                  })}
+                </div>
+              </details>
 
-  <p
-    style={{
-      fontSize: "13px",
-      color: "#666"
-    }}
-  >
-    Select all languages you can translate.
-  </p>
-</div>
-
+              <p
+                style={{
+                  fontSize: "13px",
+                  color: "#666"
+                }}
+              >
+                Select all languages you can translate.
+              </p>
+            </div>
 
             {/* Daily Fee */}
             <label htmlFor="feePerDay">
@@ -489,6 +519,32 @@ if (selectedLanguages.length === 0) {
               </div>
             )}
           </form>
+
+          {/* TRANSLATOR RATINGS AND REVIEWS */}
+          <div
+            style={{
+              marginTop: "30px",
+              padding: "20px",
+              backgroundColor: "#ffffff",
+              border: "1px solid #e5e7eb",
+              borderRadius: "10px"
+            }}
+          >
+            <h3 style={{ color: "#166534" }}>
+              My Ratings & Customer Reviews
+            </h3>
+
+            {translatorId != null ? (
+              <RatingDisplay
+                type="translator"
+                personId={translatorId}
+              />
+            ) : (
+              <p style={{ color: "#6b7280" }}>
+                Translator rating information is unavailable.
+              </p>
+            )}
+          </div>
         </div>
       )}
     </main>

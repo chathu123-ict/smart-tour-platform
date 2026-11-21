@@ -3,6 +3,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import RatingDisplay from "../components/RatingDisplay";
 
 const API = "http://127.0.0.1:5000";
 
@@ -559,6 +560,8 @@ export default function DriversPage() {
                     </strong>
                   </p>
 
+                  <RatingDisplay type="driver" personId={driver.id} />
+
                   {/* Request Driver Button */}
                   <button
                     type="button"
@@ -599,3 +602,4 @@ export default function DriversPage() {
     </main>
   );
 }
+ 

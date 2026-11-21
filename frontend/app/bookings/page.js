@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 
 import AuthGuard from "../components/AuthGuard";
 import LogoutButton from "../components/LogoutButton";
+import ReviewForm from "../components/ReviewForm";
 
 const API_URL = "http://127.0.0.1:5000";
 
@@ -105,6 +106,8 @@ function BookingsPage() {
   const [loginRequired, setLoginRequired] = useState(false);
   const [nowMs, setNowMs] = useState(0);
 
+  const [reviewEligibility, setReviewEligibility] = useState([]);
+
   // Load bookings, drivers and requests
   useEffect(() => {
     let active = true;
@@ -202,6 +205,7 @@ function BookingsPage() {
 
   // Refresh driver requests every 10 seconds
   useEffect(() => {
+    
     let active = true;
 
     async function refreshDriverRequests() {
@@ -316,6 +320,47 @@ function BookingsPage() {
 
     return () => clearTimeout(timer);
   }, [newBookingId, loading]);
+
+
+
+  async function loadReviewEligibility() {
+    try {
+      const response = await fetch(
+        `${API_URL}/api/my-review-eligibility`,
+        {
+          credentials: "include",
+          cache: "no-store"
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error("Failed to load review eligibility");
+      }
+
+      const data = await response.json();
+
+      if (Array.isArray(data)) {
+        setReviewEligibility(data);
+      }
+    } catch (err) {
+      console.error("Review eligibility error:", err);
+    }
+  }
+
+  useEffect(() => {
+    loadReviewEligibility();
+
+    // Refresh eligibility every 30 seconds.
+    // This also detects when the travel date has ended.
+    const interval = setInterval(loadReviewEligibility, 30000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+
+
+
+
 
   // Cancel booking
   async function cancelBooking(booking) {
@@ -568,6 +613,13 @@ function BookingsPage() {
 
           const translatorCountdown =
             formatCountdown(translatorRequest, nowMs);
+
+          const eligibility = reviewEligibility.find(
+  (item) => Number(item.bookingId) === Number(booking.id)
+);
+
+
+
 
           return (
             <div
@@ -1002,6 +1054,60 @@ function BookingsPage() {
                   </p>
                 </div>
               )}
+
+
+
+{/* RATINGS AND REVIEWS */}
+<section style={infoBoxStyle}>
+  <h3 style={{ color: "#166534" }}>
+    Ratings & Reviews
+  </h3>
+
+  {eligibility?.driverReviewed && (
+    <p style={{ color: "#15803d" }}>
+      ✓ You have already reviewed your driver.
+    </p>
+  )}
+
+  {eligibility?.canReviewDriver && (
+    <ReviewForm
+      bookingId={booking.id}
+      reviewerType="Driver"
+      onSubmitted={loadReviewEligibility}
+    />
+  )}
+
+  {eligibility?.translatorReviewed && (
+    <p style={{ color: "#15803d" }}>
+      ✓ You have already reviewed your translator.
+    </p>
+  )}
+
+  {eligibility?.canReviewTranslator && (
+    <ReviewForm
+      bookingId={booking.id}
+      reviewerType="Translator"
+      onSubmitted={loadReviewEligibility}
+    />
+  )}
+
+  {!eligibility?.canReviewDriver &&
+    !eligibility?.canReviewTranslator &&
+    !eligibility?.driverReviewed &&
+    !eligibility?.translatorReviewed && (
+      <p style={{ color: "#6b7280" }}>
+        {isCancelled
+          ? "Cancelled bookings cannot be reviewed."
+          : "Reviews will be available after your travel date, for accepted drivers and translators."}
+      </p>
+    )}
+</section>
+
+
+
+
+
+
 
               {/* CANCEL BOOKING */}
               {canCancel && (

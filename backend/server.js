@@ -3003,6 +3003,409 @@ app.patch(
 
 
 
+
+
+  //15.3 RATINGS & REVIEWS SYSTEM
+
+
+// Current date in Sri Lanka (YYYY-MM-DD)
+function getSriLankaDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Colombo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+}
+
+// Customer submits a driver or translator review
+app.post(
+  "/api/reviews",
+  requireRole("customer"),
+  (req, res) => {
+    const {
+      bookingId,
+      reviewerType,
+      rating,
+      comment = ""
+    } = req.body || {};
+
+    const id = Number(bookingId);
+    const stars = Number(rating);
+
+    if (!Number.isSafeInteger(id) || id < 1) {
+      return res.status(400).json({
+        message: "Invalid booking ID"
+      });
+    }
+
+    if (!["Driver", "Translator"].includes(reviewerType)) {
+      return res.status(400).json({
+        message: "Invalid review type"
+      });
+    }
+
+    if (!Number.isInteger(stars) || stars < 1 || stars > 5) {
+      return res.status(400).json({
+        message: "Rating must be between 1 and 5"
+      });
+    }
+
+    if (typeof comment !== "string" || comment.length > 1000) {
+      return res.status(400).json({
+        message: "Comment must not exceed 1000 characters"
+      });
+    }
+
+    const email = req.session.user.email.trim().toLowerCase();
+    const today = getSriLankaDate();
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @bookingId INT = ?;
+      DECLARE @email NVARCHAR(150) = ?;
+      DECLARE @type VARCHAR(20) = ?;
+      DECLARE @rating INT = ?;
+      DECLARE @comment NVARCHAR(1000) = ?;
+      DECLARE @today DATE = ?;
+
+      DECLARE @resultCode INT = 201;
+      DECLARE @message NVARCHAR(200) = N'';
+      DECLARE @reviewId INT = NULL;
+      DECLARE @personId INT = NULL;
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Verify booking belongs to customer
+        -- and travel date has ended
+        IF NOT EXISTS (
+          SELECT 1
+          FROM Bookings WITH (UPDLOCK, HOLDLOCK)
+          WHERE id = @bookingId
+            AND LOWER(email) = @email
+            AND status <> 'Cancelled'
+            AND travelDate < @today
+        )
+        BEGIN
+          SET @resultCode = 403;
+          SET @message =
+            N'Booking is not eligible for a review';
+        END
+        ELSE IF EXISTS (
+          SELECT 1
+          FROM TourReviews WITH (UPDLOCK, HOLDLOCK)
+          WHERE bookingId = @bookingId
+            AND reviewerType = @type
+        )
+        BEGIN
+          SET @resultCode = 409;
+          SET @message =
+            N'You have already reviewed this service';
+        END
+        ELSE
+        BEGIN
+
+          IF @type = 'Driver'
+          BEGIN
+            SELECT TOP (1)
+              @personId = dr.driverId
+            FROM DriverRequests dr
+            WHERE dr.bookingId = @bookingId
+              AND dr.status = 'Accepted'
+            ORDER BY dr.id DESC;
+          END
+          ELSE
+          BEGIN
+            SELECT TOP (1)
+              @personId = tr.translatorId
+            FROM TranslatorRequests tr
+            WHERE tr.bookingId = @bookingId
+              AND tr.status = 'Accepted'
+            ORDER BY tr.id DESC;
+          END
+
+          IF @personId IS NULL
+          BEGIN
+            SET @resultCode = 409;
+            SET @message =
+              N'No accepted service provider found';
+          END
+          ELSE
+          BEGIN
+            INSERT INTO TourReviews (
+              bookingId,
+              reviewerType,
+              driverId,
+              translatorId,
+              rating,
+              comment
+            )
+            VALUES (
+              @bookingId,
+              @type,
+              CASE WHEN @type = 'Driver'
+                   THEN @personId ELSE NULL END,
+              CASE WHEN @type = 'Translator'
+                   THEN @personId ELSE NULL END,
+              @rating,
+              @comment
+            );
+
+            SET @reviewId =
+              CONVERT(INT, SCOPE_IDENTITY());
+
+            SET @message =
+              N'Review submitted successfully!';
+          END
+        END
+
+        COMMIT TRANSACTION;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+
+      SELECT
+        @resultCode AS resultCode,
+        @message AS message,
+        @reviewId AS reviewId;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [
+        id,
+        email,
+        reviewerType,
+        stars,
+        comment.trim(),
+        today
+      ],
+      (error, rows) => {
+        if (error) {
+          console.error("Review Submit Error:", error);
+
+          if (/2601|2627|duplicate|UNIQUE/i.test(
+            error.message || ""
+          )) {
+            return res.status(409).json({
+              message: "Review already submitted"
+            });
+          }
+
+          return res.status(500).json({
+            message: "Failed to submit review"
+          });
+        }
+
+        const result = rows?.[0];
+
+        if (!result) {
+          return res.status(500).json({
+            message: "No review result returned"
+          });
+        }
+
+        if (result.resultCode !== 201) {
+          return res.status(result.resultCode).json({
+            message: result.message
+          });
+        }
+
+        return res.status(201).json({
+          message: result.message,
+          reviewId: result.reviewId
+        });
+      }
+    );
+  }
+);
+
+
+
+
+
+
+app.get(
+  "/api/my-review-eligibility",
+  requireRole("customer"),
+  (req, res) => {
+    const email = req.session.user.email.trim().toLowerCase();
+
+    const query = `
+      SELECT
+        b.id AS bookingId,
+        CONVERT(VARCHAR(10), b.travelDate, 23) AS travelDate,
+        b.status,
+
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM DriverRequests dr
+          WHERE dr.bookingId = b.id
+            AND dr.status = 'Accepted'
+        ) THEN 1 ELSE 0 END AS hasAcceptedDriver,
+
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM TranslatorRequests tr
+          WHERE tr.bookingId = b.id
+            AND tr.status = 'Accepted'
+        ) THEN 1 ELSE 0 END AS hasAcceptedTranslator,
+
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM TourReviews r
+          WHERE r.bookingId = b.id
+            AND r.reviewerType = 'Driver'
+        ) THEN 1 ELSE 0 END AS driverReviewed,
+
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM TourReviews r
+          WHERE r.bookingId = b.id
+            AND r.reviewerType = 'Translator'
+        ) THEN 1 ELSE 0 END AS translatorReviewed
+
+      FROM Bookings b
+      WHERE LOWER(b.email) = ?
+      ORDER BY b.id DESC
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [email],
+      (error, rows) => {
+        if (error) {
+          console.error("Review Eligibility Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to load review eligibility"
+          });
+        }
+
+        const today = getSriLankaDate();
+
+        const eligibility = (rows || []).map((item) => {
+          const completedDate = item.travelDate < today;
+          const activeBooking = item.status !== "Cancelled";
+
+          const driverReviewed = Boolean(item.driverReviewed);
+          const translatorReviewed = Boolean(item.translatorReviewed);
+
+          return {
+            bookingId: item.bookingId,
+
+            canReviewDriver:
+              completedDate &&
+              activeBooking &&
+              Boolean(item.hasAcceptedDriver) &&
+              !driverReviewed,
+
+            canReviewTranslator:
+              completedDate &&
+              activeBooking &&
+              Boolean(item.hasAcceptedTranslator) &&
+              !translatorReviewed,
+
+            driverReviewed,
+            translatorReviewed
+          };
+        });
+
+        return res.json(eligibility);
+      }
+    );
+  }
+);
+
+
+
+
+app.get("/api/reviews/:type/:id", (req, res) => {
+  const type = req.params.type.toLowerCase();
+  const personId = Number(req.params.id);
+
+  if (!["driver", "translator"].includes(type)) {
+    return res.status(400).json({
+      message: "Invalid review type"
+    });
+  }
+
+  if (!Number.isInteger(personId) || personId <= 0) {
+    return res.status(400).json({
+      message: "Invalid person ID"
+    });
+  }
+
+  const column = type === "driver" ? "driverId" : "translatorId";
+  const reviewerType = type === "driver" ? "Driver" : "Translator";
+
+  const query = `
+    SELECT
+      id,
+      bookingId,
+      rating,
+      comment,
+      createdAt
+    FROM TourReviews
+    WHERE reviewerType = ?
+      AND ${column} = ?
+    ORDER BY createdAt DESC, id DESC
+  `;
+
+  sql.query(
+    connectionString,
+    query,
+    [reviewerType, personId],
+    (error, rows) => {
+      if (error) {
+        console.error("Load reviews error:", error);
+        return res.status(500).json({
+          message: "Failed to load reviews"
+        });
+      }
+
+      const reviews = rows || [];
+
+      const totalReviews = reviews.length;
+
+      const averageRating = totalReviews
+        ? Number(
+            (
+              reviews.reduce(
+                (sum, review) => sum + Number(review.rating),
+                0
+              ) / totalReviews
+            ).toFixed(1)
+          )
+        : 0;
+
+      return res.json({
+        type: reviewerType,
+        personId,
+        averageRating,
+        totalReviews,
+        reviews
+      });
+    }
+  );
+});
+
+
+
+
+
+
+
+
 // 16. START BACKEND SERVER
 
 
