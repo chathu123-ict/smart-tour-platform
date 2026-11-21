@@ -220,9 +220,26 @@ export default function TranslatorsPage() {
         fontFamily: "Arial",
       }}
     >
-      <Link href="/" className="back-btn">
-        ← Back to Home
-      </Link>
+      
+<div style={{
+  display: "flex",
+  gap: "12px",
+  flexWrap: "wrap",
+  marginBottom: "30px"
+}}>
+  <Link href="/" className="back-btn">
+    ← Back to Home
+  </Link>
+
+  <Link
+    href="/bookings"
+    className="back-btn"
+    style={{ backgroundColor: "#2563eb" }}
+  >
+    ← Back to Booking Dashboard
+  </Link>
+</div>
+
 
       <h1>Our Translators</h1>
 
