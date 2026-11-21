@@ -2625,7 +2625,7 @@ app.patch("/api/driver-profile", requireRole("driver"), (req, res) => {
 
 
 
-// 15. CANCEL CUSTOMER BOOKING
+// 15.1 CANCEL CUSTOMER BOOKING
 
 app.patch(
   "/api/bookings/:id/cancel",
@@ -2739,6 +2739,266 @@ app.patch(
     );
   }
 );
+
+
+//15.2 translator profile management
+
+
+ // GET TRANSLATOR PROFILE
+ 
+
+app.get(
+  "/api/translator-profile",
+  requireRole("translator"),
+  (req, res) => {
+    const translatorId = Number(
+      req.session.user.translatorId
+    );
+
+    if (
+      !Number.isSafeInteger(translatorId) ||
+      translatorId < 1
+    ) {
+      return res.status(404).json({
+        message: "Translator profile not linked"
+      });
+    }
+
+    const query = `
+      SELECT
+        id,
+        name,
+        languages,
+        feePerDay,
+        available
+      FROM Translators
+      WHERE id = ?
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [translatorId],
+      (error, rows) => {
+        if (error) {
+          console.error("Translator Profile Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to load translator profile"
+          });
+        }
+
+        if (!rows || rows.length === 0) {
+          return res.status(404).json({
+            message: "Translator profile not found"
+          });
+        }
+
+        res.json({
+          ...rows[0],
+          available: Boolean(rows[0].available)
+        });
+      }
+    );
+  }
+);
+
+
+
+// UPDATE TRANSLATOR PROFILE
+
+
+app.patch(
+  "/api/translator-profile",
+  requireRole("translator"),
+  (req, res) => {
+    const translatorId = Number(
+      req.session.user.translatorId
+    );
+
+    const userId = Number(req.session.user.id);
+
+    if (
+      !Number.isSafeInteger(translatorId) ||
+      translatorId < 1 ||
+      !Number.isSafeInteger(userId) ||
+      userId < 1
+    ) {
+      return res.status(404).json({
+        message: "Translator profile not linked"
+      });
+    }
+
+    const {
+      name,
+      languages,
+      feePerDay,
+      available
+    } = req.body || {};
+
+    if (
+      typeof name !== "string" ||
+      typeof languages !== "string" ||
+      typeof available !== "boolean"
+    ) {
+      return res.status(400).json({
+        message: "Invalid profile details"
+      });
+    }
+
+    const cleanName = name.trim();
+    const cleanLanguages = languages.trim();
+    const feeText = String(feePerDay ?? "").trim();
+
+    if (
+      !cleanName ||
+      cleanName.length > 100 ||
+      !cleanLanguages ||
+      cleanLanguages.length > 300
+    ) {
+      return res.status(400).json({
+        message: "Invalid name or languages"
+      });
+    }
+
+    if (!/^\d+(?:\.\d{1,2})?$/.test(feeText)) {
+      return res.status(400).json({
+        message: "Enter a valid daily fee"
+      });
+    }
+
+    const cleanFee = Number(feeText);
+
+    if (
+      !Number.isFinite(cleanFee) ||
+      cleanFee > 99999999.99
+    ) {
+      return res.status(400).json({
+        message: "Invalid daily fee"
+      });
+    }
+
+    const query = `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      DECLARE @translatorId INT = ?;
+      DECLARE @userId INT = ?;
+      DECLARE @name NVARCHAR(100) = ?;
+      DECLARE @languages NVARCHAR(300) = ?;
+      DECLARE @fee DECIMAL(10,2) = ?;
+      DECLARE @available BIT = ?;
+
+      BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF NOT EXISTS (
+          SELECT 1
+          FROM Translators WITH (UPDLOCK, HOLDLOCK)
+          WHERE id = @translatorId
+        )
+        BEGIN
+          THROW 50001, 'Translator profile not found', 1;
+        END;
+
+        UPDATE Translators
+        SET
+          name = @name,
+          languages = @languages,
+          feePerDay = @fee,
+          available = @available
+        WHERE id = @translatorId;
+
+        -- Keep account name synchronized
+        UPDATE Users
+        SET name = @name
+        WHERE id = @userId
+          AND translatorId = @translatorId;
+
+        IF @@ROWCOUNT <> 1
+        BEGIN
+          THROW 50002, 'Linked user account not found', 1;
+        END;
+
+        COMMIT TRANSACTION;
+
+        SELECT
+          id,
+          name,
+          languages,
+          feePerDay,
+          available
+        FROM Translators
+        WHERE id = @translatorId;
+
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRANSACTION;
+
+        THROW;
+      END CATCH;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [
+        translatorId,
+        userId,
+        cleanName,
+        cleanLanguages,
+        cleanFee,
+        available ? 1 : 0
+      ],
+      (error, rows) => {
+        if (error) {
+          console.error(
+            "Update Translator Profile Error:",
+            error
+          );
+
+          return res.status(500).json({
+            message: "Failed to update translator profile"
+          });
+        }
+
+        const translator = rows?.[0];
+
+        if (!translator) {
+          return res.status(500).json({
+            message: "Updated profile could not be loaded"
+          });
+        }
+
+        req.session.user.name = translator.name;
+
+        req.session.save((saveError) => {
+          if (saveError) {
+            console.error(
+              "Session Save Error:",
+              saveError
+            );
+
+            return res.status(500).json({
+              message:
+                "Profile saved, but session refresh failed. Please log in again."
+            });
+          }
+
+          return res.json({
+            message: "Translator profile updated successfully",
+            translator: {
+              ...translator,
+              available: Boolean(translator.available)
+            }
+          });
+        });
+      }
+    );
+  }
+);
+
 
 
 

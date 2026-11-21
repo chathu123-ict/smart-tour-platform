@@ -127,6 +127,27 @@ export default function TranslatorDashboard() {
 
       <h1>Translator Dashboard</h1>
 
+
+
+      <Link
+  href="/translator-profile"
+  style={{
+    display: "inline-block",
+    padding: "10px 18px",
+    backgroundColor: "#166534",
+    color: "white",
+    borderRadius: "6px",
+    textDecoration: "none",
+    marginBottom: "20px"
+  }}
+>
+  My Profile
+</Link>
+
+
+
+
+
       <p>
         Manage translation requests and respond within
         10 minutes.
