@@ -206,7 +206,21 @@ function LoginForm() {
         minHeight: "100vh"
       }}
     >
-      <Link href="/">
+      <Link href="/"
+      style={{
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "12px 20px",
+    backgroundColor: "#166534",
+    color: "white",
+    borderRadius: "8px",
+    textDecoration: "none",
+    fontWeight: "bold",
+    fontSize: "14px",
+    marginBottom: "20px"
+  }}
+>
         ← Back to Home
       </Link>
 

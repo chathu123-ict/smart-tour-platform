@@ -4,6 +4,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { districts } from "../../data/districts";
 
 const API = "http://127.0.0.1:5000";
 
@@ -35,6 +36,7 @@ export default function DriverRegisterPage() {
   // Driver details
   const [vehicle, setVehicle] = useState("");
   const [location, setLocation] = useState("");
+  const [district, setDistrict] = useState("");
 
   // Translator details
   const [languages, setLanguages] = useState([]);
@@ -78,14 +80,19 @@ export default function DriverRegisterPage() {
 
     // Driver registration details
     if (role === "Driver") {
-      if (!vehicle.trim() || !location.trim()) {
-        setMessage("Vehicle and location are required");
-        return;
-      }
+  if (
+    !vehicle.trim() ||
+    !location.trim() ||
+    !districts.includes(district)
+  ) {
+    setMessage("Vehicle, location and district are required");
+    return;
+  }
 
-      data.vehicle = vehicle.trim();
-      data.location = location.trim();
-    }
+  data.vehicle = vehicle.trim();
+  data.location = location.trim();
+  data.district = district;
+}
 
     // Translator registration details
     if (role === "Translator") {
@@ -196,7 +203,22 @@ export default function DriverRegisterPage() {
         fontFamily: "Arial"
       }}
     >
-      <Link href="/register">
+      <Link href="/register"
+      
+      style={{
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "12px 20px",
+    backgroundColor: "#166534",
+    color: "white",
+    borderRadius: "8px",
+    textDecoration: "none",
+    fontWeight: "bold",
+    fontSize: "14px",
+    marginBottom: "20px"
+  }}
+>
         ← Back to Registration
       </Link>
 
@@ -274,6 +296,27 @@ export default function DriverRegisterPage() {
                 required
                 maxLength={100}
               />
+
+
+              <label>Driver Base District</label>
+
+<select
+  style={inputStyle}
+  value={district}
+  onChange={(e) => setDistrict(e.target.value)}
+  required={role === "Driver"}
+>
+  <option value="">Select your district</option>
+
+  {districts.map((item) => (
+    <option key={item} value={item}>
+      {item}
+    </option>
+  ))}
+</select>
+
+
+
             </div>
           )}
 

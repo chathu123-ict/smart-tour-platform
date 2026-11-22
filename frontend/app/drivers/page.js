@@ -23,7 +23,7 @@ export default function DriversPage() {
   const [message, setMessage] = useState("");
   const [requestSuccess, setRequestSuccess] = useState(false);
 
-  // Get Booking ID and Travel Date from URL
+  // Get Booking ID and date from URL.
   useEffect(() => {
     const params = new URLSearchParams(
       window.location.search
@@ -41,23 +41,20 @@ export default function DriversPage() {
     }
   }, []);
 
-  // Load customer's bookings for validation
+  // Load customer bookings.
   useEffect(() => {
     let active = true;
 
     async function loadBookings() {
       try {
-        const response = await fetch(
-          `${API}/api/bookings`,
-          {
-            credentials: "include",
-            cache: "no-store"
-          }
-        );
+        const response = await fetch(`${API}/api/bookings`, {
+          credentials: "include",
+          cache: "no-store"
+        });
 
         if (!response.ok) {
           throw new Error(
-            "Unable to verify your bookings. Please login as a customer."
+            "Unable to verify bookings. Please login as a customer."
           );
         }
 
@@ -88,9 +85,28 @@ export default function DriversPage() {
     };
   }, []);
 
-  // Load Drivers based on Travel Date
+  const selectedBooking = bookings.find(
+    (booking) =>
+      Number(bookingId) > 0 &&
+      Number(booking.id) === Number(bookingId)
+  );
+
+  const bookingDate = selectedBooking
+    ? String(selectedBooking.travelDate).slice(0, 10)
+    : "";
+
+  // Only use district matching when the selected
+  // booking belongs to this customer and dates match.
+  const matchingBookingId =
+    selectedBooking &&
+    selectedBooking.status === "Pending" &&
+    bookingDate === travelDate
+      ? selectedBooking.id
+      : null;
+
+  // Load available drivers with district matching.
   useEffect(() => {
-    if (!travelDate) {
+    if (!travelDate || bookingsLoading) {
       setDrivers([]);
       return;
     }
@@ -103,16 +119,21 @@ export default function DriversPage() {
       setDrivers([]);
 
       try {
-        const response = await fetch(
-          `${API}/api/drivers?travelDate=${encodeURIComponent(
-            travelDate
-          )}`,
-          {
-            cache: "no-store",
-            credentials: "include",
-            signal: controller.signal
-          }
-        );
+        let url = `${API}/api/drivers?travelDate=${encodeURIComponent(
+          travelDate
+        )}`;
+
+        if (matchingBookingId) {
+          url += `&bookingId=${encodeURIComponent(
+            matchingBookingId
+          )}`;
+        }
+
+        const response = await fetch(url, {
+          credentials: "include",
+          cache: "no-store",
+          signal: controller.signal
+        });
 
         const data = await response.json();
 
@@ -143,9 +164,8 @@ export default function DriversPage() {
     loadDrivers();
 
     return () => controller.abort();
-  }, [travelDate]);
+  }, [travelDate, matchingBookingId, bookingsLoading]);
 
-  // Validate selected booking
   function validateBooking() {
     const id = Number(bookingId);
 
@@ -158,24 +178,16 @@ export default function DriversPage() {
     }
 
     if (bookingsLoading) {
-      return "Please wait while your bookings are loading.";
+      return "Please wait while bookings are loading.";
     }
 
-    const booking = bookings.find(
-      (item) => Number(item.id) === id
-    );
-
-    if (!booking) {
+    if (!selectedBooking) {
       return "Booking not found in your account.";
     }
 
-    if (booking.status !== "Pending") {
+    if (selectedBooking.status !== "Pending") {
       return "Driver requests are only allowed for pending bookings.";
     }
-
-    const bookingDate = String(
-      booking.travelDate
-    ).slice(0, 10);
 
     if (bookingDate !== travelDate) {
       return `Travel Date does not match your booking. Correct date: ${bookingDate}`;
@@ -184,7 +196,6 @@ export default function DriversPage() {
     return null;
   }
 
-  // Send Driver Request
   async function requestDriver(driverId) {
     if (sendingId !== null || requestSuccess) {
       return;
@@ -236,7 +247,6 @@ export default function DriversPage() {
       }
 
       setRequestSuccess(true);
-
       setMessage(
         "Driver request sent successfully! Waiting for driver confirmation."
       );
@@ -255,20 +265,19 @@ export default function DriversPage() {
     ? drivers
     : availableDrivers;
 
-  const selectedBooking = bookings.find(
-    (booking) =>
-      Number(booking.id) === Number(bookingId) &&
-      Number(bookingId) > 0
-  );
+  const sameDistrictCount = availableDrivers.filter(
+    (driver) => Boolean(driver.sameDistrict)
+  ).length;
 
   return (
     <main
       style={{
         padding: "40px",
-        fontFamily: "Arial"
+        fontFamily: "Arial",
+        minHeight: "100vh"
       }}
     >
-      {/* Navigation Buttons */}
+      {/* Navigation */}
       <div
         style={{
           display: "flex",
@@ -284,9 +293,7 @@ export default function DriversPage() {
         <Link
           href="/bookings"
           className="back-btn"
-          style={{
-            backgroundColor: "#2563eb"
-          }}
+          style={{ backgroundColor: "#2563eb" }}
         >
           ← Back to Booking Dashboard
         </Link>
@@ -295,10 +302,11 @@ export default function DriversPage() {
       <h1>Our Drivers</h1>
 
       <p>
-        Select a travel date to check driver availability.
+        Find available drivers for your tour.
+        Drivers from your pickup district appear first.
       </p>
 
-      {/* Driver Request Details */}
+      {/* Booking details */}
       <div
         style={{
           backgroundColor: "#f3f4f6",
@@ -310,46 +318,33 @@ export default function DriversPage() {
         <h3>Request a Driver</h3>
 
         <p>
-          Enter your active Tour Booking ID to request a driver.
+          Enter your active Tour Booking ID.
         </p>
 
-        {/* Booking ID */}
-        <div>
-          <label htmlFor="bookingId">
-            <strong>Booking ID: </strong>
-          </label>
+        <label htmlFor="bookingId">
+          <strong>Booking ID</strong>
+        </label>
 
-          <input
-            id="bookingId"
-            type="number"
-            min="1"
-            value={bookingId}
-            disabled={
-              requestSuccess || sendingId !== null
-            }
-            onChange={(e) => {
-              setBookingId(e.target.value);
-              setMessage("");
-              setRequestSuccess(false);
-            }}
-            placeholder="Example: 4013"
-            style={{
-              padding: "10px",
-              border: "1px solid #ccc",
-              borderRadius: "6px",
-              width: "300px",
-              maxWidth: "100%",
-              marginTop: "10px"
-            }}
-          />
-        </div>
+        <input
+          id="bookingId"
+          type="number"
+          min="1"
+          value={bookingId}
+          disabled={requestSuccess || sendingId !== null}
+          onChange={(e) => {
+            setBookingId(e.target.value);
+            setMessage("");
+            setRequestSuccess(false);
+          }}
+          placeholder="Example: 4019"
+          style={inputStyle}
+        />
 
-        {/* Booking Information */}
         {selectedBooking && (
           <div
             style={{
               backgroundColor: "#e0f2fe",
-              padding: "12px",
+              padding: "14px",
               borderRadius: "8px",
               marginTop: "15px"
             }}
@@ -360,25 +355,31 @@ export default function DriversPage() {
             </p>
 
             <p>
-              <strong>Booking Date:</strong>{" "}
-              {String(
-                selectedBooking.travelDate
-              ).slice(0, 10)}
+              <strong>Travel Date:</strong>{" "}
+              {bookingDate}
             </p>
 
             <p>
-              <strong>Booking Status:</strong>{" "}
+              <strong>Status:</strong>{" "}
               {selectedBooking.status}
             </p>
+
+            {matchingBookingId && (
+              <p style={{ color: "#166534" }}>
+                <strong>
+                  District matching enabled for this booking.
+                </strong>
+              </p>
+            )}
           </div>
         )}
 
-        {/* Automatic Fallback */}
+        {/* Automatic fallback permission */}
         <label
           style={{
             display: "flex",
-            alignItems: "flex-start",
             gap: "12px",
+            alignItems: "flex-start",
             marginTop: "20px",
             cursor: "pointer"
           }}
@@ -386,9 +387,7 @@ export default function DriversPage() {
           <input
             type="checkbox"
             checked={autoFallback}
-            disabled={
-              requestSuccess || sendingId !== null
-            }
+            disabled={requestSuccess || sendingId !== null}
             onChange={(e) =>
               setAutoFallback(e.target.checked)
             }
@@ -414,19 +413,13 @@ export default function DriversPage() {
           </span>
         </label>
 
-        <p
-          style={{
-            fontSize: "13px",
-            marginTop: "15px"
-          }}
-        >
-          You can find your Booking ID in the{" "}
+        <p style={{ fontSize: "13px", marginTop: "15px" }}>
+          Find your Booking ID in the{" "}
           <Link href="/bookings">
             Booking Dashboard
           </Link>.
         </p>
 
-        {/* Request Message */}
         {message && (
           <div
             role="status"
@@ -455,7 +448,7 @@ export default function DriversPage() {
         )}
       </div>
 
-      {/* Travel Date */}
+      {/* Travel date */}
       <div style={{ marginBottom: "25px" }}>
         <label htmlFor="travelDate">
           <strong>Travel Date: </strong>
@@ -465,26 +458,17 @@ export default function DriversPage() {
           id="travelDate"
           type="date"
           value={travelDate}
-          disabled={
-            requestSuccess || sendingId !== null
-          }
+          disabled={requestSuccess || sendingId !== null}
           onChange={(e) => {
             setTravelDate(e.target.value);
             setMessage("");
           }}
-          style={{
-            padding: "10px",
-            marginLeft: "10px",
-            borderRadius: "5px",
-            border: "1px solid #ccc"
-          }}
+          style={inputStyle}
         />
       </div>
 
       {!travelDate && (
-        <p>
-          Please select a travel date to view available drivers.
-        </p>
+        <p>Please select a travel date.</p>
       )}
 
       {loading && <p>Loading drivers...</p>}
@@ -494,17 +478,44 @@ export default function DriversPage() {
       )}
 
       {error && (
-        <p style={{ color: "red" }}>
+        <p style={{ color: "#b91c1c" }}>
           {error}
         </p>
       )}
 
-      {/* Driver List */}
+      {/* Driver list */}
       {travelDate && !loading && !error && (
         <>
           <h3>
             Available Drivers: {availableDrivers.length}
           </h3>
+
+          {matchingBookingId && (
+            <div
+              style={{
+                backgroundColor: "#f0fdf4",
+                border: "1px solid #86efac",
+                padding: "15px",
+                borderRadius: "8px",
+                marginBottom: "20px"
+              }}
+            >
+              <strong>
+                Same-District Driver Matching
+              </strong>
+
+              <p style={{ marginBottom: "5px" }}>
+                {sameDistrictCount} available driver(s)
+                found in your pickup district.
+              </p>
+
+              <p style={{ marginBottom: 0 }}>
+                Same-district drivers appear first.
+                Drivers from other districts may have
+                additional pickup charges.
+              </p>
+            </div>
+          )}
 
           <label
             style={{
@@ -535,6 +546,24 @@ export default function DriversPage() {
                 >
                   <h3>{driver.name}</h3>
 
+                  {matchingBookingId &&
+                    driver.sameDistrict &&
+                    driver.availableForDate && (
+                      <p
+                        style={{
+                          display: "inline-block",
+                          backgroundColor: "#dcfce7",
+                          color: "#166534",
+                          padding: "6px 10px",
+                          borderRadius: "6px",
+                          fontSize: "13px",
+                          fontWeight: "bold"
+                        }}
+                      >
+                        ✓ Same District
+                      </p>
+                    )}
+
                   <p>
                     <strong>Vehicle:</strong>{" "}
                     {driver.vehicle}
@@ -543,6 +572,11 @@ export default function DriversPage() {
                   <p>
                     <strong>Location:</strong>{" "}
                     {driver.location}
+                  </p>
+
+                  <p>
+                    <strong>District:</strong>{" "}
+                    {driver.district || "Not specified"}
                   </p>
 
                   <p>
@@ -560,9 +594,11 @@ export default function DriversPage() {
                     </strong>
                   </p>
 
-                  <RatingDisplay type="driver" personId={driver.id} />
+                  <RatingDisplay
+                    type="driver"
+                    personId={driver.id}
+                  />
 
-                  {/* Request Driver Button */}
                   <button
                     type="button"
                     className="details-btn"
@@ -602,4 +638,12 @@ export default function DriversPage() {
     </main>
   );
 }
- 
+
+const inputStyle = {
+  padding: "10px",
+  marginTop: "10px",
+  marginBottom: "12px",
+  border: "1px solid #ccc",
+  borderRadius: "6px",
+  maxWidth: "100%"
+};

@@ -76,7 +76,21 @@ export default function RegisterPage() {
 
   return (
     <main style={{ padding: "40px 20px", fontFamily: "Arial" }}>
-      <Link href="/">← Back to Home</Link>
+      <Link href="/"
+      style={{
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "8px",
+    padding: "12px 20px",
+    backgroundColor: "#166534",
+    color: "white",
+    borderRadius: "8px",
+    textDecoration: "none",
+    fontWeight: "bold",
+    fontSize: "14px",
+    marginBottom: "20px"
+  }}
+>← Back to Home</Link>
 
       <div style={{
         maxWidth: "450px",

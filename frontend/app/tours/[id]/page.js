@@ -55,9 +55,31 @@ export default async function TourDetails({ params }) {
 
       <p>Destination: {tour.location}</p>
 
-      <p>
-        Price: Rs. {tour.price.toLocaleString()}
-      </p>
+      <div
+  style={{
+    backgroundColor: "#f0fdf4",
+    padding: "15px",
+    borderRadius: "8px",
+    marginBottom: "20px"
+  }}
+>
+  <h3>
+    Base Package Fee: Rs.{" "}
+    {Number(tour.price).toLocaleString("en-LK")}
+  </h3>
+
+  <p>
+    This is the base package fee only.
+    Transportation charges are calculated separately
+    based on pickup location, travel distance,
+    driver location and trip type.
+  </p>
+
+  <p>
+    Optional translator charges are not included.
+    Your final price will be displayed before payment.
+  </p>
+</div>
 
       <a href="#booking">Book Now</a>
 

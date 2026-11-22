@@ -281,6 +281,7 @@ app.get("/api/tours", (req, res) => {
 
  // 5. REGISTER CUSTOMER / DRIVER / TRANSLATOR
 
+
 app.post("/api/register", async (req, res) => {
   const {
     name,
@@ -289,6 +290,7 @@ app.post("/api/register", async (req, res) => {
     role = "Customer",
     vehicle,
     location,
+    district,
     languages,
     feePerDay
   } = req.body || {};
@@ -338,7 +340,8 @@ app.post("/api/register", async (req, res) => {
     Buffer.byteLength(password, "utf8") > 72
   ) {
     return res.status(400).json({
-      message: "Password must be at least 8 characters and at most 72 bytes"
+      message:
+        "Password must be at least 8 characters and at most 72 bytes"
     });
   }
 
@@ -351,19 +354,50 @@ app.post("/api/register", async (req, res) => {
   // Driver validation
   let cleanVehicle = "";
   let cleanLocation = "";
+  let cleanDistrict = "";
+
+  const validDistricts = [
+    "Ampara",
+    "Anuradhapura",
+    "Badulla",
+    "Batticaloa",
+    "Colombo",
+    "Galle",
+    "Gampaha",
+    "Hambantota",
+    "Jaffna",
+    "Kalutara",
+    "Kandy",
+    "Kegalle",
+    "Kilinochchi",
+    "Kurunegala",
+    "Mannar",
+    "Matale",
+    "Matara",
+    "Monaragala",
+    "Mullaitivu",
+    "Nuwara Eliya",
+    "Polonnaruwa",
+    "Puttalam",
+    "Ratnapura",
+    "Trincomalee",
+    "Vavuniya"
+  ];
 
   if (selectedRole === "Driver") {
     if (
       typeof vehicle !== "string" ||
-      typeof location !== "string"
+      typeof location !== "string" ||
+      typeof district !== "string"
     ) {
       return res.status(400).json({
-        message: "Vehicle and location are required"
+        message: "Vehicle, location and district are required"
       });
     }
 
     cleanVehicle = vehicle.trim();
     cleanLocation = location.trim();
+    cleanDistrict = district.trim();
 
     if (
       !cleanVehicle ||
@@ -373,6 +407,12 @@ app.post("/api/register", async (req, res) => {
     ) {
       return res.status(400).json({
         message: "Invalid vehicle or location"
+      });
+    }
+
+    if (!validDistricts.includes(cleanDistrict)) {
+      return res.status(400).json({
+        message: "Please select a valid driver district"
       });
     }
   }
@@ -432,6 +472,7 @@ app.post("/api/register", async (req, res) => {
       DECLARE @role NVARCHAR(20) = ?;
       DECLARE @vehicle NVARCHAR(100) = ?;
       DECLARE @location NVARCHAR(100) = ?;
+      DECLARE @district NVARCHAR(100) = ?;
       DECLARE @languages NVARCHAR(300) = ?;
       DECLARE @feePerDay DECIMAL(10,2) = ?;
 
@@ -460,9 +501,9 @@ app.post("/api/register", async (req, res) => {
           IF @role = 'Driver'
           BEGIN
             INSERT INTO Drivers
-              (name, vehicle, location, available)
+              (name, vehicle, location, district, available)
             VALUES
-              (@name, @vehicle, @location, 1);
+              (@name, @vehicle, @location, @district, 1);
 
             SET @driverId =
               CONVERT(INT, SCOPE_IDENTITY());
@@ -536,6 +577,7 @@ app.post("/api/register", async (req, res) => {
         selectedRole,
         cleanVehicle,
         cleanLocation,
+        cleanDistrict,
         cleanLanguages,
         translatorFee
       ],
@@ -593,6 +635,7 @@ app.post("/api/register", async (req, res) => {
     });
   }
 });
+
 
 
 
@@ -753,35 +796,112 @@ app.post("/api/logout", (req, res) => {
 });
 
 
-
-
 // 9. CREATE BOOKING
-
 
 app.post(
   "/api/bookings",
   requireRole("customer"),
   (req, res) => {
-    const { tourId, travelDate, people } = req.body;
+    const {
+      tourId,
+      travelDate,
+      people,
+      pickupLocation,
+      dropoffLocation,
+      tripType,
+      pickupDistrict
+    } = req.body || {};
 
     const user = req.session.user;
     const tourIdNumber = Number(tourId);
     const peopleCount = Number(people);
 
+    // Validate booking details
+    const validDate =
+      typeof travelDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(travelDate) &&
+      Number.isFinite(Date.parse(travelDate)) &&
+      new Date(travelDate).toISOString().slice(0, 10) === travelDate;
+
     if (
-      !Number.isInteger(tourIdNumber) ||
+      !Number.isSafeInteger(tourIdNumber) ||
       tourIdNumber < 1 ||
-      !Number.isInteger(peopleCount) ||
+      !Number.isSafeInteger(peopleCount) ||
       peopleCount < 1 ||
-      typeof travelDate !== "string" ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(travelDate) ||
-      !Number.isFinite(Date.parse(travelDate))
+      !validDate
     ) {
       return res.status(400).json({
         message: "Invalid booking details"
       });
     }
 
+    // Validate pickup and drop-off locations
+    const validLocation = (value) =>
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      value.trim().length <= 255;
+
+    if (
+      !validLocation(pickupLocation) ||
+      !validLocation(dropoffLocation)
+    ) {
+      return res.status(400).json({
+        message: "Please enter valid pickup and drop-off locations"
+      });
+    }
+
+    const pickup = pickupLocation.trim();
+    const dropoff = dropoffLocation.trim();
+
+    // Validate trip type
+    if (
+      !["one-way", "round-trip"].includes(tripType)
+    ) {
+      return res.status(400).json({
+        message: "Please select a valid trip type"
+      });
+    }
+
+    // Sri Lanka's 25 districts
+    const validDistricts = [
+      "Ampara",
+      "Anuradhapura",
+      "Badulla",
+      "Batticaloa",
+      "Colombo",
+      "Galle",
+      "Gampaha",
+      "Hambantota",
+      "Jaffna",
+      "Kalutara",
+      "Kandy",
+      "Kegalle",
+      "Kilinochchi",
+      "Kurunegala",
+      "Mannar",
+      "Matale",
+      "Matara",
+      "Monaragala",
+      "Mullaitivu",
+      "Nuwara Eliya",
+      "Polonnaruwa",
+      "Puttalam",
+      "Ratnapura",
+      "Trincomalee",
+      "Vavuniya"
+    ];
+
+    // Validate pickup district
+    if (
+      typeof pickupDistrict !== "string" ||
+      !validDistricts.includes(pickupDistrict)
+    ) {
+      return res.status(400).json({
+        message: "Please select a valid pickup district"
+      });
+    }
+
+    // Check selected tour exists
     const tourQuery = `
       SELECT id, name
       FROM Tours
@@ -801,7 +921,7 @@ app.post(
           });
         }
 
-        if (tourRows.length === 0) {
+        if (!tourRows?.length) {
           return res.status(404).json({
             message: "Tour not found"
           });
@@ -809,11 +929,23 @@ app.post(
 
         const tour = tourRows[0];
 
+        // Save booking with district information
         const insertQuery = `
           INSERT INTO Bookings
-            (tourId, name, email, travelDate, people, status)
+          (
+            tourId,
+            name,
+            email,
+            travelDate,
+            people,
+            status,
+            pickupLocation,
+            dropoffLocation,
+            tripType,
+            pickupDistrict
+          )
           OUTPUT INSERTED.id
-          VALUES (?, ?, ?, ?, ?, 'Pending')
+          VALUES (?, ?, ?, ?, ?, 'Pending', ?, ?, ?, ?)
         `;
 
         sql.query(
@@ -824,7 +956,11 @@ app.post(
             user.name,
             user.email,
             travelDate,
-            peopleCount
+            peopleCount,
+            pickup,
+            dropoff,
+            tripType,
+            pickupDistrict
           ],
           (error, rows) => {
             if (error) {
@@ -835,7 +971,7 @@ app.post(
               });
             }
 
-            res.status(201).json({
+            return res.status(201).json({
               message: "Booking saved successfully!",
               booking: {
                 id: rows[0].id,
@@ -845,7 +981,12 @@ app.post(
                 email: user.email,
                 travelDate,
                 people: peopleCount,
-                status: "Pending"
+                status: "Pending",
+                pickupLocation: pickup,
+                dropoffLocation: dropoff,
+                tripType,
+                pickupDistrict,
+                totalPrice: null
               }
             });
           }
@@ -854,6 +995,7 @@ app.post(
     );
   }
 );
+
 
 
 // 10. CUSTOMER BOOKINGS
@@ -904,71 +1046,170 @@ app.get(
 
 
 
+ // 11.1 GET DRIVERS - DISTRICT MATCHING
 
 app.get("/api/drivers", (req, res) => {
-  const { travelDate } = req.query;
+  const { bookingId, travelDate } = req.query;
 
-  if (
-    travelDate &&
-    (
-      typeof travelDate !== "string" ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(travelDate) ||
-      !Number.isFinite(Date.parse(travelDate))
-    )
-  ) {
-    return res.status(400).json({
-      message: "Invalid travel date"
-    });
+  function loadDrivers(selectedDistrict, selectedDate) {
+    const query = `
+      WITH DriverAvailability AS (
+        SELECT
+          d.id,
+          d.name,
+          d.vehicle,
+          d.location,
+          d.district,
+          d.available,
+
+          CASE
+            WHEN ? IS NOT NULL
+              AND EXISTS (
+                SELECT 1
+                FROM DriverRequests dr
+                INNER JOIN Bookings b
+                  ON dr.bookingId = b.id
+                WHERE dr.driverId = d.id
+                  AND dr.status = 'Accepted'
+                  AND b.status <> 'Cancelled'
+                  AND b.travelDate = TRY_CONVERT(DATE, ?)
+              )
+            THEN CAST(0 AS BIT)
+            ELSE d.available
+          END AS availableForDate
+
+        FROM Drivers d
+      )
+
+      SELECT
+        *,
+        CASE
+          WHEN district = ? THEN 1
+          ELSE 0
+        END AS sameDistrict
+
+      FROM DriverAvailability
+
+      ORDER BY
+        availableForDate DESC,
+        CASE
+          WHEN district = ? THEN 0
+          ELSE 1
+        END,
+        id ASC;
+    `;
+
+    sql.query(
+      connectionString,
+      query,
+      [
+        selectedDate,
+        selectedDate,
+        selectedDistrict,
+        selectedDistrict
+      ],
+      (error, rows) => {
+        if (error) {
+          console.error("Drivers Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to load drivers"
+          });
+        }
+
+        return res.json(
+          (rows || []).map((driver) => ({
+            ...driver,
+            available: Boolean(driver.available),
+            availableForDate: Boolean(driver.availableForDate),
+            sameDistrict: Boolean(driver.sameDistrict)
+          }))
+        );
+      }
+    );
   }
 
-  const query = `
-    SELECT
-      d.id,
-      d.name,
-      d.vehicle,
-      d.location,
-      d.available,
-      CASE
-        WHEN ? IS NOT NULL
-          AND EXISTS (
-            SELECT 1
-            FROM DriverRequests dr
-            INNER JOIN Bookings b
-              ON dr.bookingId = b.id
-            WHERE dr.driverId = d.id
-              AND dr.status = 'Accepted'
-              AND b.travelDate = TRY_CONVERT(DATE, ?)
-          )
-        THEN CAST(0 AS BIT)
-        ELSE d.available
-      END AS availableForDate
-    FROM Drivers d
-    ORDER BY d.id
-  `;
+  // If a booking ID is supplied, read its district
+  // securely from the database.
+  if (bookingId !== undefined) {
+    const id = Number(bookingId);
+    const user = req.session?.user;
 
-  sql.query(
-    connectionString,
-    query,
-    [travelDate || null, travelDate || null],
-    (error, rows) => {
-      if (error) {
-        console.error("Drivers Error:", error);
-
-        return res.status(500).json({
-          message: "Failed to load drivers"
-        });
-      }
-
-      res.json(
-        rows.map((driver) => ({
-          ...driver,
-          available: Boolean(driver.available),
-          availableForDate: Boolean(driver.availableForDate)
-        }))
-      );
+    if (!Number.isSafeInteger(id) || id < 1) {
+      return res.status(400).json({
+        message: "Invalid booking ID"
+      });
     }
-  );
+
+    if (!user) {
+      return res.status(401).json({
+        message: "Please login first"
+      });
+    }
+
+    if (String(user.role).toLowerCase() !== "customer") {
+      return res.status(403).json({
+        message: "Customer access required"
+      });
+    }
+
+    const bookingQuery = `
+      SELECT
+        pickupDistrict,
+        CONVERT(VARCHAR(10), travelDate, 23) AS travelDate
+      FROM Bookings
+      WHERE id = ?
+        AND LOWER(email) = ?
+        AND status <> 'Cancelled'
+    `;
+
+    return sql.query(
+      connectionString,
+      bookingQuery,
+      [id, user.email.trim().toLowerCase()],
+      (error, rows) => {
+        if (error) {
+          console.error("Booking Lookup Error:", error);
+
+          return res.status(500).json({
+            message: "Failed to load booking information"
+          });
+        }
+
+        if (!rows?.length) {
+          return res.status(404).json({
+            message: "Active booking not found"
+          });
+        }
+
+        const booking = rows[0];
+
+        return loadDrivers(
+          booking.pickupDistrict || null,
+          booking.travelDate
+        );
+      }
+    );
+  }
+
+  // Keep the original driver listing working.
+  if (travelDate !== undefined) {
+    const validDate =
+      typeof travelDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(travelDate) &&
+      !Number.isNaN(Date.parse(travelDate)) &&
+      new Date(travelDate).toISOString().slice(0, 10) === travelDate;
+
+    if (!validDate) {
+      return res.status(400).json({
+        message: "Invalid travel date"
+      });
+    }
+  }
+
+  return loadDrivers(null, travelDate || null);
 });
+
 
 
 
